@@ -26,21 +26,16 @@ export async function guardarEstadoRemoto(estado) {
 }
 
 export async function validarOficinista(pass) {
-  const { data, error } = await supabase
-    .from("config_privada")
-    .select("valor")
-    .eq("clave", "oficinista_pass")
-    .single();
+  const { data, error } = await supabase.rpc("validar_oficinista", { p_pass: pass });
   if (error) throw error;
-  return data?.valor === pass;
+  return data === true;
 }
 
 export async function cambiarPassOficinista(actualPass, newPass) {
-  const ok = await validarOficinista(actualPass);
-  if (!ok) throw new Error("Contraseña actual incorrecta");
-  const { error } = await supabase
-    .from("config_privada")
-    .update({ valor: newPass })
-    .eq("clave", "oficinista_pass");
+  const { data, error } = await supabase.rpc("cambiar_pass_oficinista", {
+    p_actual: actualPass,
+    p_nueva: newPass,
+  });
   if (error) throw error;
+  if (data !== true) throw new Error("Contraseña actual incorrecta");
 }

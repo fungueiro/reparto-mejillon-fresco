@@ -211,6 +211,38 @@ function initSlots(barcos) {
   });
 }
 
+// Ajusta una lista de slots para que cada barco tenga exactamente sus ciclos
+// (getCiclos), conservando los slots existentes y su orden. Añade los que
+// falten (barcos nuevos o más ciclos) al final y descarta los sobrantes y los
+// de barcos que ya no están en la flota. Usado al importar flota con bateas.
+function reconcileSlots(prevSlots, barcosList) {
+  const usado = {};
+  barcosList.forEach((b) => { usado[b.id] = 0; });
+  const out = [];
+  // 1) Conservar slots existentes (en su orden) hasta el nº de ciclos objetivo
+  prevSlots.forEach((s) => {
+    const b = barcosList.find((x) => x.id === s.barcoId);
+    if (!b) return;
+    const target = getCiclos(b.numBateas);
+    if (usado[b.id] < target) {
+      usado[b.id] += 1;
+      out.push({ ...s, numeroCiclo: usado[b.id], cupoCiclo: getCupoCiclo(b.numBateas) });
+    }
+  });
+  // 2) Añadir los ciclos que falten (barcos nuevos o con más bateas) al final
+  barcosList.forEach((b) => {
+    const target = getCiclos(b.numBateas);
+    for (let i = usado[b.id]; i < target; i++) {
+      out.push({
+        id: uid(), barcoId: b.id, numeroCiclo: i + 1,
+        cupoCiclo: getCupoCiclo(b.numBateas), bolsasEntregadas: 0,
+        ajusteBolsas: 0, posicion: 0, estado: "en_espera",
+      });
+    }
+  });
+  return recalc(out);
+}
+
 /* ── DESIGN TOKENS ─────────────────────────────────────────── */
 const C = {
   bg: "#0f1923", surface: "#111e2b", border: "#1e3348", border2: "#2d4a6a",
@@ -933,34 +965,41 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
 // La lista es propia de CADA calidad. Este modal descarga una plantilla
 // Excel con el orden actual de ESTA calidad para editarla y volver a subirla,
 // y al confirmar reordena únicamente la lista de la calidad activa.
-function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, onClose }) {
-  const [filas,    setFilas]    = useState(null);
-  const [errores,  setErrores]  = useState([]);
-  const [warnings, setWarnings] = useState([]);
-  const [haySaldo, setHaySaldo] = useState(false);
+function ModalImportarLista({ barcos, slots, setSlots, setBarcos, setSlotsTodas, calidadNombre, snapshot, onClose }) {
+  const [filas,     setFilas]     = useState(null);
+  const [errores,   setErrores]   = useState([]);
+  const [warnings,  setWarnings]  = useState([]);
+  const [haySaldo,  setHaySaldo]  = useState(false);
+  const [hayBateas, setHayBateas] = useState(false);
   const inputRef = useRef(null);
 
   const norm = (s) => String(s ?? "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-  const ALIAS_BARCO = ["barco", "embarcacion", "buque", "nombre"];
-  const ALIAS_ORDEN = ["orden", "posicion", "pos", "n", "no", "numero", "#"];
-  const ALIAS_SALDO = ["saldo", "saldobolsas", "saldodebolsas", "ajuste", "ajustebolsas", "balance"];
+  const ALIAS_BARCO  = ["barco", "embarcacion", "buque", "nombre"];
+  const ALIAS_ORDEN  = ["orden", "posicion", "pos", "n", "no", "numero", "#"];
+  const ALIAS_SALDO  = ["saldo", "saldobolsas", "saldodebolsas", "ajuste", "ajustebolsas", "balance"];
+  const ALIAS_BATEAS = ["bateas", "batea", "nbateas", "numbateas", "nodebateas", "bat"];
   const parseSaldo = (v) => {
     const n = parseInt(String(v ?? "").replace(/\s/g, "").replace(",", "."), 10);
     return Number.isFinite(n) ? n : 0;
+  };
+  const parseBateas = (v) => {
+    const n = parseFloat(String(v ?? "").replace(",", ".").trim());
+    return Number.isFinite(n) ? n : null;
   };
   const nombreDe = (id) => barcos.find((b) => b.id === id)?.nombre ?? "";
 
   const procesar = (rows) => {
     const nombresBarcos = barcos.map((b) => norm(b.nombre));
-    // Localizar cabecera con columna "Barco" (y opcionales "Orden" y "Saldo")
-    let colBarco = 0, colOrden = -1, colSaldo = -1, headerIdx = -1;
+    // Localizar cabecera con columna "Barco" (y opcionales "Orden", "Bateas", "Saldo")
+    let colBarco = 0, colOrden = -1, colSaldo = -1, colBateas = -1, headerIdx = -1;
     for (let i = 0; i < rows.length; i++) {
       const celdas = (rows[i] || []).map(norm);
       const cb = celdas.findIndex((c) => ALIAS_BARCO.includes(c));
       if (cb >= 0) {
         headerIdx = i; colBarco = cb;
-        colOrden = celdas.findIndex((c) => ALIAS_ORDEN.includes(c));
-        colSaldo = celdas.findIndex((c) => ALIAS_SALDO.includes(c));
+        colOrden  = celdas.findIndex((c) => ALIAS_ORDEN.includes(c));
+        colSaldo  = celdas.findIndex((c) => ALIAS_SALDO.includes(c));
+        colBateas = celdas.findIndex((c) => ALIAS_BATEAS.includes(c));
         break;
       }
     }
@@ -974,12 +1013,14 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
       const first = norm(rows[0]?.[0] ?? "");
       if (rows.length && !nombresBarcos.includes(first)) dataRows = rows.slice(1);
     }
-    // Registros {nombre, orden, saldo}
+    const conBateas = colBateas >= 0;
+    // Registros {nombre, orden, saldo, bateas}
     let registros = dataRows
       .map((r) => ({
         nombre: String(r[colBarco] ?? "").trim(),
         orden: colOrden >= 0 ? parseInt(String(r[colOrden] ?? "").trim(), 10) : null,
         saldo: colSaldo >= 0 ? parseSaldo(r[colSaldo]) : 0,
+        bateas: conBateas ? parseBateas(r[colBateas]) : null,
       }))
       .filter((x) => x.nombre);
     // Si hay columna "Orden" válida en todas las filas, ordenar por ella
@@ -988,20 +1029,38 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
     }
     const errs = [];
     const warns = [];
-    registros.forEach((x, i) => {
-      if (!barcos.find((b) => norm(b.nombre) === norm(x.nombre))) {
-        errs.push(`Fila ${i + 1}: "${x.nombre}" no coincide con ningún barco`);
+    // Sin columna Bateas: los nombres deben existir ya en la flota
+    if (!conBateas) {
+      registros.forEach((x, i) => {
+        if (!barcos.find((b) => norm(b.nombre) === norm(x.nombre))) {
+          errs.push(`Fila ${i + 1}: "${x.nombre}" no coincide con ningún barco`);
+        }
+      });
+    }
+    // Comprobaciones por barco (ciclos esperados; bateas si vienen en el archivo)
+    const clavesBarco = [...new Set(registros.map((x) => norm(x.nombre)))];
+    clavesBarco.forEach((nk) => {
+      const filasB = registros.filter((x) => norm(x.nombre) === nk);
+      const display = filasB[0].nombre;
+      let bateas;
+      if (conBateas) {
+        bateas = filasB.map((x) => x.bateas).find((v) => v != null);
+        if (bateas == null || bateas < 0.5) {
+          errs.push(`${display}: nº de bateas inválido (mínimo 0.5).`);
+          return;
+        }
+      } else {
+        bateas = barcos.find((b) => norm(b.nombre) === nk)?.numBateas;
       }
-    });
-    // Comprobar ciclos esperados por barco
-    barcos.forEach((b) => {
-      const expected = getCiclos(b.numBateas);
-      const found = registros.filter((x) => norm(x.nombre) === norm(b.nombre)).length;
-      if (found !== expected) {
-        warns.push(`${b.nombre}: esperados ${expected} ciclo(s), encontrados ${found}`);
+      if (bateas != null) {
+        const expected = getCiclos(bateas);
+        if (filasB.length !== expected) {
+          warns.push(`${display}: ${bateas} bateas → ${expected} ciclo(s) esperados, ${filasB.length} fila(s) en el archivo`);
+        }
       }
     });
     setHaySaldo(colSaldo >= 0);
+    setHayBateas(conBateas);
     setErrores(errs);
     setWarnings(warns);
     setFilas(registros);
@@ -1025,67 +1084,95 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
     else reader.readAsArrayBuffer(file);
   };
 
-  // Descarga una plantilla Excel con el orden y el saldo ACTUALES de esta calidad.
-  // Una fila por posición de la rueda (cada barco aparece tantas veces como ciclos tenga).
-  // Columna "Saldo": bolsas a favor (+) o en contra (−) que se aplicarán al cupo de ese ciclo.
+  // Descarga una plantilla Excel con la flota, el orden y el saldo ACTUALES de
+  // esta calidad. Una fila por posición de la rueda (cada barco aparece tantas
+  // veces como ciclos tenga). Columnas: Orden, Barco, Bateas, Saldo.
   const descargarPlantilla = () => {
     let filasPlantilla;
     if (slots && slots.length) {
       filasPlantilla = [...slots]
         .sort((a, b) => a.posicion - b.posicion)
-        .map((s) => ({ nombre: nombreDe(s.barcoId), saldo: s.ajusteBolsas || 0 }))
+        .map((s) => {
+          const b = barcos.find((x) => x.id === s.barcoId);
+          return { nombre: b?.nombre ?? "", bateas: b?.numBateas ?? "", saldo: s.ajusteBolsas || 0 };
+        })
         .filter((x) => x.nombre);
     } else {
       filasPlantilla = barcos.flatMap((b) =>
-        Array.from({ length: getCiclos(b.numBateas) }, () => ({ nombre: b.nombre, saldo: 0 })));
+        Array.from({ length: getCiclos(b.numBateas) }, () => ({ nombre: b.nombre, bateas: b.numBateas, saldo: 0 })));
     }
-    const aoa = [["Orden", "Barco", "Saldo"], ...filasPlantilla.map((x, i) => [i + 1, x.nombre, x.saldo])];
+    const aoa = [["Orden", "Barco", "Bateas", "Saldo"], ...filasPlantilla.map((x, i) => [i + 1, x.nombre, x.bateas, x.saldo])];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Lista");
     const safe = String(calidadNombre || "lista").replace(/\s+/g, "_");
     XLSX.writeFile(wb, `plantilla_lista_${safe}.xlsx`);
   };
 
+  // Reordena los slots de una calidad según el archivo (y fija el saldo si viene).
+  const reordenar = (currentSlots, barcosList) => {
+    const slotsPorBarco = {};
+    barcosList.forEach((b) => {
+      slotsPorBarco[b.id] = currentSlots
+        .filter((s) => s.barcoId === b.id)
+        .sort((a, b2) => a.numeroCiclo - b2.numeroCiclo);
+    });
+    const cicloIdx = {};
+    barcosList.forEach((b) => { cicloIdx[b.id] = 0; });
+    const ordenados = [];
+    const usados = new Set();
+    filas.forEach((fila) => {
+      const b = barcosList.find((x) => norm(x.nombre) === norm(fila.nombre));
+      if (!b) return;
+      const bSlots = slotsPorBarco[b.id] || [];
+      const idx = cicloIdx[b.id] || 0;
+      if (idx < bSlots.length) {
+        const slot = haySaldo ? { ...bSlots[idx], ajusteBolsas: fila.saldo || 0 } : { ...bSlots[idx] };
+        ordenados.push(slot);
+        usados.add(bSlots[idx].id);
+        cicloIdx[b.id] = idx + 1;
+      }
+    });
+    // Conservar al final cualquier slot no cubierto por la importación
+    currentSlots.forEach((s) => { if (!usados.has(s.id)) ordenados.push({ ...s }); });
+    return recalc(ordenados);
+  };
+
   const confirmar = () => {
     if (!filas || errores.length > 0) return;
-    snapshot && snapshot(`Importar lista — ${calidadNombre || ""}`);
-    // Solo reordena (y opcionalmente fija el saldo de) la lista de la calidad activa
-    setSlots((currentSlots) => {
-      const slotsPorBarco = {};
-      barcos.forEach((b) => {
-        slotsPorBarco[b.id] = currentSlots
-          .filter((s) => s.barcoId === b.id)
-          .sort((a, b2) => a.numeroCiclo - b2.numeroCiclo);
+
+    if (hayBateas) {
+      // Modo flota: crea/actualiza barcos (global) y reordena la calidad activa
+      if (!window.confirm(`El archivo incluye la columna "Bateas": se crearán o actualizarán los barcos de la flota (afecta a TODAS las calidades) y se reordenará la lista de ${calidadNombre || "esta calidad"}. ¿Continuar?`)) return;
+      snapshot && snapshot(`Importar flota y lista — ${calidadNombre || ""}`);
+
+      // Bateas por barco (primera no nula del archivo)
+      const bateasPorBarco = {};
+      filas.forEach((f) => {
+        const k = norm(f.nombre);
+        if (!(k in bateasPorBarco) && f.bateas != null) bateasPorBarco[k] = f.bateas;
       });
-
-      const cicloIdx = {};
-      barcos.forEach((b) => { cicloIdx[b.id] = 0; });
-
-      const ordenados = [];
-      const usados = new Set();
-
-      filas.forEach((fila) => {
-        const b = barcos.find((x) => norm(x.nombre) === norm(fila.nombre));
-        if (!b) return;
-        const bSlots = slotsPorBarco[b.id] || [];
-        const idx = cicloIdx[b.id] || 0;
-        if (idx < bSlots.length) {
-          // Si el archivo trae columna Saldo, se fija el ajuste de ese ciclo;
-          // si no, se conserva el ajuste que ya tenía el slot.
-          const slot = haySaldo ? { ...bSlots[idx], ajusteBolsas: fila.saldo || 0 } : { ...bSlots[idx] };
-          ordenados.push(slot);
-          usados.add(bSlots[idx].id);
-          cicloIdx[b.id] = idx + 1;
+      // Flota nueva: actualizar bateas de los existentes y añadir los nuevos (no borra los que falten)
+      const newBarcos = barcos.map((b) => {
+        const nb = bateasPorBarco[norm(b.nombre)];
+        return nb != null && nb >= 0.5 ? { ...b, numBateas: nb } : b;
+      });
+      filas.forEach((f) => {
+        const k = norm(f.nombre);
+        if (!newBarcos.find((b) => norm(b.nombre) === k) && bateasPorBarco[k] != null && bateasPorBarco[k] >= 0.5) {
+          newBarcos.push({ id: uid(), nombre: f.nombre.trim(), numBateas: bateasPorBarco[k], activo: true, pin: "0000" });
         }
       });
 
-      // Conservar al final cualquier slot no cubierto por la importación
-      currentSlots.forEach((s) => {
-        if (!usados.has(s.id)) ordenados.push({ ...s });
-      });
-
-      return recalc(ordenados);
-    });
+      setBarcos(newBarcos);
+      // Ajusta los slots de TODAS las calidades a la nueva flota (crea/recorta ciclos)
+      setSlotsTodas((qSlots) => reconcileSlots(qSlots, newBarcos));
+      // Reordena y fija saldo SOLO en la calidad activa (sobre los slots ya reconciliados)
+      setSlots((activeSlots) => reordenar(activeSlots, newBarcos));
+    } else {
+      // Solo orden (+ saldo) de la calidad activa; los barcos deben existir
+      snapshot && snapshot(`Importar lista — ${calidadNombre || ""}`);
+      setSlots((currentSlots) => reordenar(currentSlots, barcos));
+    }
     onClose();
   };
 
@@ -1097,7 +1184,11 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
           Solo afecta a la lista de la calidad <strong style={{ color: C.text }}>{calidadNombre || "activa"}</strong>. Cada calidad tiene su propia lista.
         </div>
         <div style={{ fontSize: 13, color: C.textMid, marginBottom: 16 }}>
-          1) Descarga la plantilla (trae el orden y el saldo actuales). 2) En Excel reordena las filas — un barco por fila, repetido tantas veces como ciclos tenga — y rellena la columna <span className="mono" style={{ color: C.text }}>Saldo</span> con las bolsas a favor (+) o en contra (−) de cada ciclo (el saldo del último pedido va en la primera fila de ese barco). 3) Vuelve a subirla. Acepta <span className="mono" style={{ color: C.text }}>.xlsx</span> y <span className="mono" style={{ color: C.text }}>.csv</span>.
+          1) Descarga la plantilla (trae flota, orden y saldo actuales). 2) En Excel pon un barco por fila, repetido tantas veces como ciclos tenga, y rellena las columnas:
+          <span className="mono" style={{ color: C.text }}> Bateas</span> (nº de bateas del barco — crea el barco si no existe),
+          <span className="mono" style={{ color: C.text }}> Saldo</span> (bolsas a favor + o en contra − de ese ciclo; el saldo del último pedido va en la primera fila del barco).
+          3) Vuelve a subirla. Acepta <span className="mono" style={{ color: C.text }}>.xlsx</span> y <span className="mono" style={{ color: C.text }}>.csv</span>.
+          <br /><span style={{ color: C.textDim }}>La columna <span className="mono">Bateas</span> es opcional: sin ella solo se reordena la lista de esta calidad; con ella se crea/actualiza la flota (afecta a todas las calidades).</span>
         </div>
         <input ref={inputRef} type="file" accept=".xlsx,.csv" style={{ display: "none" }}
           onChange={(e) => e.target.files[0] && cargar(e.target.files[0])} />
@@ -1120,7 +1211,7 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
         {filas && (
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>
-              Vista previa — {filas.length} posición(es){haySaldo ? " · con saldo" : ""}
+              Vista previa — {filas.length} posición(es){hayBateas ? " · con flota" : ""}{haySaldo ? " · con saldo" : ""}
             </div>
             <div style={{ maxHeight: 240, overflowY: "auto", border: `1px solid ${C.border2}`, borderRadius: 8 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -1129,6 +1220,11 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
                     <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td className="mono" style={{ padding: "6px 12px", fontSize: 12, color: C.textDim, width: 40 }}>#{i + 1}</td>
                       <td style={{ padding: "6px 12px", fontSize: 13, color: C.text }}>{fila.nombre}</td>
+                      {hayBateas && (
+                        <td className="mono" style={{ padding: "6px 12px", fontSize: 12, textAlign: "right", width: 60, color: C.textMid }}>
+                          {fila.bateas != null ? `${fila.bateas} bat` : "—"}
+                        </td>
+                      )}
                       {haySaldo && (
                         <td className="mono" style={{ padding: "6px 12px", fontSize: 12, textAlign: "right", width: 70,
                           color: fila.saldo > 0 ? C.green : fila.saldo < 0 ? C.red : C.textDim }}>
@@ -1341,7 +1437,7 @@ function TabBarcos({ barcos, slots, cierres, calidades, listas, calidadNombre, s
         </div>
       )}
 
-      {showImport && <ModalImportarLista barcos={barcos} slots={slots} setSlots={setSlots} calidadNombre={calidadNombre} snapshot={snapshot} onClose={() => setShowImport(false)} />}
+      {showImport && <ModalImportarLista barcos={barcos} slots={slots} setSlots={setSlots} setBarcos={setBarcos} setSlotsTodas={setSlotsTodas} calidadNombre={calidadNombre} snapshot={snapshot} onClose={() => setShowImport(false)} />}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <SectionTitle>🚢 Flota</SectionTitle>
         <div style={{ display: "flex", gap: 8 }}>

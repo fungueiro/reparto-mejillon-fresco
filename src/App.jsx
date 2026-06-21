@@ -937,21 +937,32 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
   const [filas,    setFilas]    = useState(null);
   const [errores,  setErrores]  = useState([]);
   const [warnings, setWarnings] = useState([]);
+  const [haySaldo, setHaySaldo] = useState(false);
   const inputRef = useRef(null);
 
   const norm = (s) => String(s ?? "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   const ALIAS_BARCO = ["barco", "embarcacion", "buque", "nombre"];
   const ALIAS_ORDEN = ["orden", "posicion", "pos", "n", "no", "numero", "#"];
+  const ALIAS_SALDO = ["saldo", "saldobolsas", "saldodebolsas", "ajuste", "ajustebolsas", "balance"];
+  const parseSaldo = (v) => {
+    const n = parseInt(String(v ?? "").replace(/\s/g, "").replace(",", "."), 10);
+    return Number.isFinite(n) ? n : 0;
+  };
   const nombreDe = (id) => barcos.find((b) => b.id === id)?.nombre ?? "";
 
   const procesar = (rows) => {
     const nombresBarcos = barcos.map((b) => norm(b.nombre));
-    // Localizar cabecera con columna "Barco" (y opcional "Orden")
-    let colBarco = 0, colOrden = -1, headerIdx = -1;
+    // Localizar cabecera con columna "Barco" (y opcionales "Orden" y "Saldo")
+    let colBarco = 0, colOrden = -1, colSaldo = -1, headerIdx = -1;
     for (let i = 0; i < rows.length; i++) {
       const celdas = (rows[i] || []).map(norm);
       const cb = celdas.findIndex((c) => ALIAS_BARCO.includes(c));
-      if (cb >= 0) { headerIdx = i; colBarco = cb; colOrden = celdas.findIndex((c) => ALIAS_ORDEN.includes(c)); break; }
+      if (cb >= 0) {
+        headerIdx = i; colBarco = cb;
+        colOrden = celdas.findIndex((c) => ALIAS_ORDEN.includes(c));
+        colSaldo = celdas.findIndex((c) => ALIAS_SALDO.includes(c));
+        break;
+      }
     }
     let dataRows;
     if (headerIdx >= 0) {
@@ -963,36 +974,37 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
       const first = norm(rows[0]?.[0] ?? "");
       if (rows.length && !nombresBarcos.includes(first)) dataRows = rows.slice(1);
     }
-    // Registros {nombre, orden}
+    // Registros {nombre, orden, saldo}
     let registros = dataRows
       .map((r) => ({
         nombre: String(r[colBarco] ?? "").trim(),
         orden: colOrden >= 0 ? parseInt(String(r[colOrden] ?? "").trim(), 10) : null,
+        saldo: colSaldo >= 0 ? parseSaldo(r[colSaldo]) : 0,
       }))
       .filter((x) => x.nombre);
     // Si hay columna "Orden" válida en todas las filas, ordenar por ella
     if (colOrden >= 0 && registros.length && registros.every((x) => Number.isFinite(x.orden))) {
       registros = registros.map((r, i) => ({ r, i })).sort((a, b) => a.r.orden - b.r.orden || a.i - b.i).map((x) => x.r);
     }
-    const nombres = registros.map((x) => x.nombre);
     const errs = [];
     const warns = [];
-    nombres.forEach((n, i) => {
-      if (!barcos.find((b) => norm(b.nombre) === norm(n))) {
-        errs.push(`Fila ${i + 1}: "${n}" no coincide con ningún barco`);
+    registros.forEach((x, i) => {
+      if (!barcos.find((b) => norm(b.nombre) === norm(x.nombre))) {
+        errs.push(`Fila ${i + 1}: "${x.nombre}" no coincide con ningún barco`);
       }
     });
     // Comprobar ciclos esperados por barco
     barcos.forEach((b) => {
       const expected = getCiclos(b.numBateas);
-      const found = nombres.filter((n) => norm(n) === norm(b.nombre)).length;
+      const found = registros.filter((x) => norm(x.nombre) === norm(b.nombre)).length;
       if (found !== expected) {
         warns.push(`${b.nombre}: esperados ${expected} ciclo(s), encontrados ${found}`);
       }
     });
+    setHaySaldo(colSaldo >= 0);
     setErrores(errs);
     setWarnings(warns);
-    setFilas(nombres);
+    setFilas(registros);
   };
 
   const cargar = (file) => {
@@ -1013,16 +1025,21 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
     else reader.readAsArrayBuffer(file);
   };
 
-  // Descarga una plantilla Excel con el orden ACTUAL de esta calidad.
+  // Descarga una plantilla Excel con el orden y el saldo ACTUALES de esta calidad.
   // Una fila por posición de la rueda (cada barco aparece tantas veces como ciclos tenga).
+  // Columna "Saldo": bolsas a favor (+) o en contra (−) que se aplicarán al cupo de ese ciclo.
   const descargarPlantilla = () => {
-    let nombresOrden;
+    let filasPlantilla;
     if (slots && slots.length) {
-      nombresOrden = [...slots].sort((a, b) => a.posicion - b.posicion).map((s) => nombreDe(s.barcoId)).filter(Boolean);
+      filasPlantilla = [...slots]
+        .sort((a, b) => a.posicion - b.posicion)
+        .map((s) => ({ nombre: nombreDe(s.barcoId), saldo: s.ajusteBolsas || 0 }))
+        .filter((x) => x.nombre);
     } else {
-      nombresOrden = barcos.flatMap((b) => Array.from({ length: getCiclos(b.numBateas) }, () => b.nombre));
+      filasPlantilla = barcos.flatMap((b) =>
+        Array.from({ length: getCiclos(b.numBateas) }, () => ({ nombre: b.nombre, saldo: 0 })));
     }
-    const aoa = [["Orden", "Barco"], ...nombresOrden.map((n, i) => [i + 1, n])];
+    const aoa = [["Orden", "Barco", "Saldo"], ...filasPlantilla.map((x, i) => [i + 1, x.nombre, x.saldo])];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Lista");
     const safe = String(calidadNombre || "lista").replace(/\s+/g, "_");
@@ -1032,13 +1049,8 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
   const confirmar = () => {
     if (!filas || errores.length > 0) return;
     snapshot && snapshot(`Importar lista — ${calidadNombre || ""}`);
-    // Solo reordena la lista de la calidad activa
+    // Solo reordena (y opcionalmente fija el saldo de) la lista de la calidad activa
     setSlots((currentSlots) => {
-      const ordenImport = filas.map((nombre) => {
-        const b = barcos.find((x) => norm(x.nombre) === norm(nombre));
-        return b ? b.id : null;
-      }).filter(Boolean);
-
       const slotsPorBarco = {};
       barcos.forEach((b) => {
         slotsPorBarco[b.id] = currentSlots
@@ -1052,13 +1064,18 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
       const ordenados = [];
       const usados = new Set();
 
-      ordenImport.forEach((barcoId) => {
-        const bSlots = slotsPorBarco[barcoId] || [];
-        const idx = cicloIdx[barcoId] || 0;
+      filas.forEach((fila) => {
+        const b = barcos.find((x) => norm(x.nombre) === norm(fila.nombre));
+        if (!b) return;
+        const bSlots = slotsPorBarco[b.id] || [];
+        const idx = cicloIdx[b.id] || 0;
         if (idx < bSlots.length) {
-          ordenados.push({ ...bSlots[idx] });
+          // Si el archivo trae columna Saldo, se fija el ajuste de ese ciclo;
+          // si no, se conserva el ajuste que ya tenía el slot.
+          const slot = haySaldo ? { ...bSlots[idx], ajusteBolsas: fila.saldo || 0 } : { ...bSlots[idx] };
+          ordenados.push(slot);
           usados.add(bSlots[idx].id);
-          cicloIdx[barcoId] = idx + 1;
+          cicloIdx[b.id] = idx + 1;
         }
       });
 
@@ -1080,7 +1097,7 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
           Solo afecta a la lista de la calidad <strong style={{ color: C.text }}>{calidadNombre || "activa"}</strong>. Cada calidad tiene su propia lista.
         </div>
         <div style={{ fontSize: 13, color: C.textMid, marginBottom: 16 }}>
-          1) Descarga la plantilla (trae el orden actual). 2) Reordena las filas en Excel — un barco por fila, repetido tantas veces como ciclos tenga. 3) Vuelve a subirla. Acepta <span className="mono" style={{ color: C.text }}>.xlsx</span> y <span className="mono" style={{ color: C.text }}>.csv</span>.
+          1) Descarga la plantilla (trae el orden y el saldo actuales). 2) En Excel reordena las filas — un barco por fila, repetido tantas veces como ciclos tenga — y rellena la columna <span className="mono" style={{ color: C.text }}>Saldo</span> con las bolsas a favor (+) o en contra (−) de cada ciclo (el saldo del último pedido va en la primera fila de ese barco). 3) Vuelve a subirla. Acepta <span className="mono" style={{ color: C.text }}>.xlsx</span> y <span className="mono" style={{ color: C.text }}>.csv</span>.
         </div>
         <input ref={inputRef} type="file" accept=".xlsx,.csv" style={{ display: "none" }}
           onChange={(e) => e.target.files[0] && cargar(e.target.files[0])} />
@@ -1102,14 +1119,22 @@ function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, 
         )}
         {filas && (
           <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Vista previa — {filas.length} posición(es)</div>
+            <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>
+              Vista previa — {filas.length} posición(es){haySaldo ? " · con saldo" : ""}
+            </div>
             <div style={{ maxHeight: 240, overflowY: "auto", border: `1px solid ${C.border2}`, borderRadius: 8 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <tbody>
-                  {filas.map((nombre, i) => (
+                  {filas.map((fila, i) => (
                     <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td className="mono" style={{ padding: "6px 12px", fontSize: 12, color: C.textDim, width: 40 }}>#{i + 1}</td>
-                      <td style={{ padding: "6px 12px", fontSize: 13, color: C.text }}>{nombre}</td>
+                      <td style={{ padding: "6px 12px", fontSize: 13, color: C.text }}>{fila.nombre}</td>
+                      {haySaldo && (
+                        <td className="mono" style={{ padding: "6px 12px", fontSize: 12, textAlign: "right", width: 70,
+                          color: fila.saldo > 0 ? C.green : fila.saldo < 0 ? C.red : C.textDim }}>
+                          {fila.saldo > 0 ? "+" : ""}{fila.saldo}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

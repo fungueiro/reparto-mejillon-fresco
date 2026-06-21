@@ -929,33 +929,63 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
 }
 
 /* ── TAB FLOTA ─────────────────────────────────────────────── */
-/* ── MODAL IMPORTAR ORDEN FLOTA ────────────────────────────── */
-function ModalImportarLista({ barcos, setSlotsTodas, onClose }) {
+/* ── MODAL IMPORTAR LISTA (POR CALIDAD) ────────────────────── */
+// La lista es propia de CADA calidad. Este modal descarga una plantilla
+// Excel con el orden actual de ESTA calidad para editarla y volver a subirla,
+// y al confirmar reordena únicamente la lista de la calidad activa.
+function ModalImportarLista({ barcos, slots, setSlots, calidadNombre, snapshot, onClose }) {
   const [filas,    setFilas]    = useState(null);
   const [errores,  setErrores]  = useState([]);
   const [warnings, setWarnings] = useState([]);
   const inputRef = useRef(null);
 
+  const norm = (s) => String(s ?? "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const ALIAS_BARCO = ["barco", "embarcacion", "buque", "nombre"];
+  const ALIAS_ORDEN = ["orden", "posicion", "pos", "n", "no", "numero", "#"];
+  const nombreDe = (id) => barcos.find((b) => b.id === id)?.nombre ?? "";
+
   const procesar = (rows) => {
-    // Detect header: skip first row if it doesn't match any barco nombre
-    const nombresBarcos = barcos.map((b) => b.nombre.toLowerCase().trim());
-    let dataRows = rows;
-    if (rows.length > 0) {
-      const first = String(rows[0][0] ?? "").toLowerCase().trim();
-      if (!nombresBarcos.includes(first)) dataRows = rows.slice(1);
+    const nombresBarcos = barcos.map((b) => norm(b.nombre));
+    // Localizar cabecera con columna "Barco" (y opcional "Orden")
+    let colBarco = 0, colOrden = -1, headerIdx = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const celdas = (rows[i] || []).map(norm);
+      const cb = celdas.findIndex((c) => ALIAS_BARCO.includes(c));
+      if (cb >= 0) { headerIdx = i; colBarco = cb; colOrden = celdas.findIndex((c) => ALIAS_ORDEN.includes(c)); break; }
     }
-    const nombres = dataRows.map((r) => String(r[0] ?? "").trim()).filter(Boolean);
+    let dataRows;
+    if (headerIdx >= 0) {
+      dataRows = rows.slice(headerIdx + 1);
+    } else {
+      // Sin cabecera reconocible: nombres en la 1ª columna; saltar 1ª fila si no es un barco
+      colBarco = 0;
+      dataRows = rows;
+      const first = norm(rows[0]?.[0] ?? "");
+      if (rows.length && !nombresBarcos.includes(first)) dataRows = rows.slice(1);
+    }
+    // Registros {nombre, orden}
+    let registros = dataRows
+      .map((r) => ({
+        nombre: String(r[colBarco] ?? "").trim(),
+        orden: colOrden >= 0 ? parseInt(String(r[colOrden] ?? "").trim(), 10) : null,
+      }))
+      .filter((x) => x.nombre);
+    // Si hay columna "Orden" válida en todas las filas, ordenar por ella
+    if (colOrden >= 0 && registros.length && registros.every((x) => Number.isFinite(x.orden))) {
+      registros = registros.map((r, i) => ({ r, i })).sort((a, b) => a.r.orden - b.r.orden || a.i - b.i).map((x) => x.r);
+    }
+    const nombres = registros.map((x) => x.nombre);
     const errs = [];
     const warns = [];
     nombres.forEach((n, i) => {
-      if (!barcos.find((b) => b.nombre.toLowerCase() === n.toLowerCase())) {
+      if (!barcos.find((b) => norm(b.nombre) === norm(n))) {
         errs.push(`Fila ${i + 1}: "${n}" no coincide con ningún barco`);
       }
     });
-    // Check ciclo counts
+    // Comprobar ciclos esperados por barco
     barcos.forEach((b) => {
       const expected = getCiclos(b.numBateas);
-      const found = nombres.filter((n) => n.toLowerCase() === b.nombre.toLowerCase()).length;
+      const found = nombres.filter((n) => norm(n) === norm(b.nombre)).length;
       if (found !== expected) {
         warns.push(`${b.nombre}: esperados ${expected} ciclo(s), encontrados ${found}`);
       }
@@ -983,16 +1013,32 @@ function ModalImportarLista({ barcos, setSlotsTodas, onClose }) {
     else reader.readAsArrayBuffer(file);
   };
 
+  // Descarga una plantilla Excel con el orden ACTUAL de esta calidad.
+  // Una fila por posición de la rueda (cada barco aparece tantas veces como ciclos tenga).
+  const descargarPlantilla = () => {
+    let nombresOrden;
+    if (slots && slots.length) {
+      nombresOrden = [...slots].sort((a, b) => a.posicion - b.posicion).map((s) => nombreDe(s.barcoId)).filter(Boolean);
+    } else {
+      nombresOrden = barcos.flatMap((b) => Array.from({ length: getCiclos(b.numBateas) }, () => b.nombre));
+    }
+    const aoa = [["Orden", "Barco"], ...nombresOrden.map((n, i) => [i + 1, n])];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Lista");
+    const safe = String(calidadNombre || "lista").replace(/\s+/g, "_");
+    XLSX.writeFile(wb, `plantilla_lista_${safe}.xlsx`);
+  };
+
   const confirmar = () => {
     if (!filas || errores.length > 0) return;
-    setSlotsTodas((currentSlots) => {
-      // Build ordered list of barco ids from import
+    snapshot && snapshot(`Importar lista — ${calidadNombre || ""}`);
+    // Solo reordena la lista de la calidad activa
+    setSlots((currentSlots) => {
       const ordenImport = filas.map((nombre) => {
-        const b = barcos.find((x) => x.nombre.toLowerCase() === nombre.toLowerCase());
+        const b = barcos.find((x) => norm(x.nombre) === norm(nombre));
         return b ? b.id : null;
       }).filter(Boolean);
 
-      // For each barco, get its slots sorted by numeroCiclo
       const slotsPorBarco = {};
       barcos.forEach((b) => {
         slotsPorBarco[b.id] = currentSlots
@@ -1000,7 +1046,6 @@ function ModalImportarLista({ barcos, setSlotsTodas, onClose }) {
           .sort((a, b2) => a.numeroCiclo - b2.numeroCiclo);
       });
 
-      // Track which cycle index we're assigning per barco
       const cicloIdx = {};
       barcos.forEach((b) => { cicloIdx[b.id] = 0; });
 
@@ -1017,7 +1062,7 @@ function ModalImportarLista({ barcos, setSlotsTodas, onClose }) {
         }
       });
 
-      // Append any remaining slots not covered by the import list
+      // Conservar al final cualquier slot no cubierto por la importación
       currentSlots.forEach((s) => {
         if (!usados.has(s.id)) ordenados.push({ ...s });
       });
@@ -1030,15 +1075,21 @@ function ModalImportarLista({ barcos, setSlotsTodas, onClose }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}>
       <Card style={{ maxWidth: 480, width: "100%", boxShadow: "0 24px 64px #000a", maxHeight: "90vh", overflowY: "auto" }}>
-        <div className="cond" style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 4 }}>📂 Importar orden de la rueda</div>
+        <div className="cond" style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 4 }}>📂 Importar lista{calidadNombre ? ` — ${calidadNombre}` : ""}</div>
+        <div style={{ fontSize: 13, color: C.textMid, marginBottom: 6 }}>
+          Solo afecta a la lista de la calidad <strong style={{ color: C.text }}>{calidadNombre || "activa"}</strong>. Cada calidad tiene su propia lista.
+        </div>
         <div style={{ fontSize: 13, color: C.textMid, marginBottom: 16 }}>
-          Excel (.xlsx) o CSV con el nombre del barco en la primera columna. Un barco por fila, en el orden de la rueda.
+          1) Descarga la plantilla (trae el orden actual). 2) Reordena las filas en Excel — un barco por fila, repetido tantas veces como ciclos tenga. 3) Vuelve a subirla. Acepta <span className="mono" style={{ color: C.text }}>.xlsx</span> y <span className="mono" style={{ color: C.text }}>.csv</span>.
         </div>
         <input ref={inputRef} type="file" accept=".xlsx,.csv" style={{ display: "none" }}
           onChange={(e) => e.target.files[0] && cargar(e.target.files[0])} />
-        <Btn onClick={() => inputRef.current?.click()} color={C.blue} style={{ marginBottom: 16 }}>
-          Seleccionar archivo
-        </Btn>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+          <Btn onClick={() => inputRef.current?.click()} color={C.blue}>
+            Seleccionar archivo
+          </Btn>
+          <Btn outline onClick={descargarPlantilla}>⬇ Descargar plantilla</Btn>
+        </div>
         {errores.length > 0 && (
           <div style={{ background: "#1f1010", border: `1px solid ${C.red}40`, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
             {errores.map((e, i) => <div key={i} style={{ fontSize: 12, color: C.red }}>{e}</div>)}
@@ -1077,7 +1128,7 @@ function ModalImportarLista({ barcos, setSlotsTodas, onClose }) {
   );
 }
 
-function TabBarcos({ barcos, slots, cierres, setBarcos, setSlots, setSlotsTodas, setCierres, snapshot }) {
+function TabBarcos({ barcos, slots, cierres, calidades, listas, calidadNombre, setBarcos, setSlots, setSlotsTodas, setCierres, snapshot }) {
   const [form,       setForm]       = useState({ nombre: "", numBateas: "" });
   const [show,       setShow]       = useState(false);
   const [err,        setErr]        = useState("");
@@ -1170,14 +1221,11 @@ function TabBarcos({ barcos, slots, cierres, setBarcos, setSlots, setSlotsTodas,
           ))}
         </div>
       ),
-      saldo: calidades && listas ? (
+      saldo: (calidades && listas) ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {calidades.map((cal) => {
-            const listasCal = listas.filter((l) => l.calidadId === cal.id);
-            const total = listasCal.reduce((acc, lista) => {
-              const slotsCal = (lista.slots || []).filter((s) => s.barcoId === b.id);
-              return acc + slotsCal.reduce((a, s) => a + (s.ajusteBolsas || 0), 0);
-            }, 0);
+            const slotsCal = (listas[cal.id]?.slots || []).filter((s) => s.barcoId === b.id);
+            const total = slotsCal.reduce((a, s) => a + (s.ajusteBolsas || 0), 0);
             const color = total > 0 ? C.green : total < 0 ? C.red : C.textDim;
             return (
               <div key={cal.id} className="mono" style={{ fontSize: 11, color }}>
@@ -1268,11 +1316,11 @@ function TabBarcos({ barcos, slots, cierres, setBarcos, setSlots, setSlotsTodas,
         </div>
       )}
 
-      {showImport && <ModalImportarLista barcos={barcos} setSlotsTodas={setSlotsTodas} onClose={() => setShowImport(false)} />}
+      {showImport && <ModalImportarLista barcos={barcos} slots={slots} setSlots={setSlots} calidadNombre={calidadNombre} snapshot={snapshot} onClose={() => setShowImport(false)} />}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <SectionTitle>🚢 Flota</SectionTitle>
         <div style={{ display: "flex", gap: 8 }}>
-          <Btn outline onClick={() => setShowImport(true)}>📂 Importar orden</Btn>
+          <Btn outline onClick={() => setShowImport(true)}>📂 Importar lista{calidadNombre ? ` — ${calidadNombre}` : ""}</Btn>
           <Btn onClick={() => setShow(!show)} color={C.blue}>+ Añadir barco</Btn>
         </div>
       </div>
@@ -2425,7 +2473,7 @@ export default function App() {
         <main style={{ maxWidth: 960, margin: "0 auto", padding: "28px 24px" }}>
           {tab === "lista"     && <TabLista      slots={slots} barcos={barcos} cierres={cierres} calidadNombre={calidadNombre} setSlots={setSlots} exclusiones={exclusiones} calidadActiva={calidadActiva} />}
           {tab === "pedido"    && <TabPedido     slots={slots} barcos={barcos} cierres={cierres} setCierres={setCierres} setSlots={setSlots} setHistorial={setHistorial} pedidoActivo={pedidoActivo} setPedidoActivo={setPedidoActivo} calidadNombre={calidadNombre} exclusiones={exclusiones} setExclusiones={setExclusiones} rechazos={rechazos} setRechazos={setRechazos} calidadActiva={calidadActiva} snapshot={snapshot} />}
-          {tab === "barcos"    && <TabBarcos     barcos={barcos} slots={slots} cierres={cierres} listas={listas} calidades={calidades} setBarcos={setBarcos} setSlots={setSlots} setSlotsTodas={setSlotsTodas} setCierres={setCierres} snapshot={snapshot} />}
+          {tab === "barcos"    && <TabBarcos     barcos={barcos} slots={slots} cierres={cierres} listas={listas} calidades={calidades} calidadNombre={calidadNombre} setBarcos={setBarcos} setSlots={setSlots} setSlotsTodas={setSlotsTodas} setCierres={setCierres} snapshot={snapshot} />}
           {tab === "cierres"   && <TabCierres    barcos={barcos} cierres={cierres} setCierres={setCierres} historial={historial} snapshot={snapshot} />}
           {tab === "exclusiones" && <TabExclusiones barcos={barcos} exclusiones={exclusiones} setExclusiones={setExclusiones} calidades={calidades} calidadActiva={calidadActiva} snapshot={snapshot} />}
           {tab === "historial" && <TabHistorial  historial={historial} calidadNombre={calidadNombre} />}

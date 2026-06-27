@@ -1785,7 +1785,7 @@ function TabExclusiones({ barcos, exclusiones, setExclusiones, calidades, calida
 }
 
 /* ── TAB HISTORIAL ─────────────────────────────────────────── */
-function TabHistorial({ historial, calidadNombre }) {
+function TabHistorial({ historial, calidadNombre, setHistorial, snapshot }) {
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
   const [vista, setVista] = useState("pedidos"); // "pedidos" | "barcos"
@@ -1826,6 +1826,15 @@ function TabHistorial({ historial, calidadNombre }) {
 
   const totalBolsas = filtrado.reduce((s, p) => s + p.lineas.reduce((ss, l) => ss + l.bolsas, 0), 0);
 
+  const borrarHistorial = () => {
+    if (!window.confirm(
+      `¿Borrar TODO el historial de ${calidadNombre || "esta calidad"} (${historial.length} pedido${historial.length !== 1 ? "s" : ""})?\n\n` +
+      `Solo afecta a esta calidad. Podrás revertirlo con "Deshacer" mientras no cierres la app.`
+    )) return;
+    snapshot && snapshot(`Borrar historial — ${calidadNombre || ""}`);
+    setHistorial([]);
+  };
+
   if (historial.length === 0) {
     return (
       <div style={{ textAlign: "center", padding: "60px 0", color: C.textDim }}>
@@ -1841,6 +1850,7 @@ function TabHistorial({ historial, calidadNombre }) {
         <SectionTitle>📜 Historial{calidadNombre ? ` — ${calidadNombre}` : ""}</SectionTitle>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Btn small onClick={exportarExcel} color={C.green}>⬇ Excel</Btn>
+          <Btn small onClick={borrarHistorial} color={C.red}>🗑 Borrar historial</Btn>
         </div>
       </div>
 
@@ -2597,7 +2607,7 @@ export default function App() {
           {tab === "barcos"    && <TabBarcos     barcos={barcos} slots={slots} cierres={cierres} listas={listas} calidades={calidades} calidadNombre={calidadNombre} setBarcos={setBarcos} setSlots={setSlots} setSlotsTodas={setSlotsTodas} setCierres={setCierres} snapshot={snapshot} />}
           {tab === "cierres"   && <TabCierres    barcos={barcos} cierres={cierres} setCierres={setCierres} historial={historial} snapshot={snapshot} />}
           {tab === "exclusiones" && <TabExclusiones barcos={barcos} exclusiones={exclusiones} setExclusiones={setExclusiones} calidades={calidades} calidadActiva={calidadActiva} snapshot={snapshot} />}
-          {tab === "historial" && <TabHistorial  historial={historial} calidadNombre={calidadNombre} />}
+          {tab === "historial" && <TabHistorial  historial={historial} calidadNombre={calidadNombre} setHistorial={setHistorial} snapshot={snapshot} />}
           {tab === "config"    && <TabConfiguracion barcos={barcos} setBarcos={setBarcos} calidades={calidades} addCalidad={addCalidad} deleteCalidad={deleteCalidad} listas={listas} exportarBackup={exportarBackup} importarBackup={importarBackup} />}
         </main>
       </div>

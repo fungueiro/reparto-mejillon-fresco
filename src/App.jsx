@@ -132,7 +132,17 @@ function processAssignment(slots, barcos, cierres, slotId, bolsas) {
 
   /* Caso: queda cupo combinado ≥ 200 → sigue cobrando */
   if (remCombined >= 200) {
-    arr[idx] = { ...slot, bolsasEntregadas: totalEntregado, estado: "cobrando" };
+    // Ancla para la "vuelta atrás": si el barco ENTRA a cobrando desde una
+    // posición que no es la 1ª, recordamos el id del slot que tenía justo
+    // delante. Así, si más adelante rechaza un pedido estando cobrando al
+    // frente, puede volver detrás de ese mismo barco (Opción 2). Si ya estaba
+    // cobrando, conservamos su ancla original; si saltó desde la 1ª posición,
+    // no hay ancla (null).
+    const wasCobrando = slot.estado === "cobrando";
+    const ancla = wasCobrando
+      ? (slot.anclaId ?? null)
+      : (idx > 0 ? arr[idx - 1].id : null);
+    arr[idx] = { ...slot, bolsasEntregadas: totalEntregado, estado: "cobrando", anclaId: ancla };
     const [s] = arr.splice(idx, 1);
     insertAlFinalDeCobrando(arr, s);
     return { newSlots: recalc(arr), newCierres: nc };
@@ -149,7 +159,7 @@ function processAssignment(slots, barcos, cierres, slotId, bolsas) {
   const nextEstado = barco && isEspecial(barco.numBateas) ? "saltando_turno" : "en_espera";
   const selfAjuste = !sib && ajuste !== 0 ? ajuste : 0;
   arr = arr.map((s) =>
-    s.id === slotId ? { ...s, bolsasEntregadas: 0, ajusteBolsas: selfAjuste, estado: nextEstado } : s
+    s.id === slotId ? { ...s, bolsasEntregadas: 0, ajusteBolsas: selfAjuste, estado: nextEstado, anclaId: null } : s
   );
   const removed = arr.splice(arr.findIndex((s) => s.id === slotId), 1)[0];
   arr.push(removed);
@@ -821,6 +831,22 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
             ns = recalc([...noAfectados, ...afectados]);
           } else {
             nuevosRechazos[key] = cuenta;
+          }
+        } else {
+          // NORMA "vuelta atrás" (Opción 2): un barco que saltó al frente para
+          // cobrar (guarda anclaId) y ahora RECHAZA el pedido estando cobrando,
+          // vuelve a colocarse justo detrás de su barco-ancla, conservando el
+          // cupo ya servido este turno (no se resetea bolsasEntregadas).
+          const slotActual = ns.find((s) => s.id === asig.slotId);
+          if (slotActual && slotActual.estado === "cobrando" &&
+              cobrandoAntes.has(asig.slotId) && slotActual.anclaId) {
+            const idxC = ns.findIndex((s) => s.id === asig.slotId);
+            const [cSlot] = ns.splice(idxC, 1);
+            const limpio  = { ...cSlot, estado: "en_espera", anclaId: null };
+            const anclaIdx = ns.findIndex((s) => s.id === cSlot.anclaId);
+            if (anclaIdx >= 0) ns.splice(anclaIdx + 1, 0, limpio);
+            else ns.push(limpio); // fallback: ancla ya no está → al final
+            ns = recalc(ns);
           }
         }
       }

@@ -2131,19 +2131,26 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
   const [newPass,    setNewPass]    = useState("");
   const [confirmPass,setConfirmPass]= useState("");
   const [passMsg,    setPassMsg]    = useState("");
+  const [guardandoPass, setGuardandoPass] = useState(false);
   const [pins,       setPins]       = useState(() => Object.fromEntries(barcos.map((b) => [b.id, b.pin || "0000"])));
 
   const savePass = async () => {
     if (newPass.length < 4) { setPassMsg("Mínimo 4 caracteres"); return; }
     if (newPass !== confirmPass) { setPassMsg("Las contraseñas no coinciden"); return; }
-    setPassMsg("Guardando…");
-    const ok = await cambiarPassOficinista(actualPass, newPass);
-    if (ok) {
-      setActualPass(""); setNewPass(""); setConfirmPass("");
-      setPassMsg("✓ Contraseña actualizada");
-      setTimeout(() => setPassMsg(""), 3000);
-    } else {
-      setPassMsg("✗ La contraseña actual no es correcta o falló la conexión");
+    setGuardandoPass(true); setPassMsg("Guardando…");
+    try {
+      const ok = await cambiarPassOficinista(actualPass, newPass);
+      if (ok) {
+        setActualPass(""); setNewPass(""); setConfirmPass("");
+        setPassMsg("✓ Contraseña actualizada");
+        setTimeout(() => setPassMsg(""), 3000);
+      } else {
+        setPassMsg("✗ La contraseña actual no es correcta");
+      }
+    } catch (_) {
+      setPassMsg("✗ Sin conexión con el servidor");
+    } finally {
+      setGuardandoPass(false);
     }
   };
 
@@ -2168,7 +2175,7 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
           <Input type="password" value={confirmPass} onChange={(e) => setConfirmPass(e.target.value)} placeholder="Repetir contraseña" style={{ marginBottom: 14 }}
             onKeyDown={(e) => e.key === "Enter" && savePass()} />
           {passMsg && <div style={{ fontSize: 12, marginBottom: 10, color: passMsg.startsWith("✓") ? C.green : C.red }}>{passMsg}</div>}
-          <Btn onClick={savePass} color={C.blue} style={{ width: "100%" }}>Guardar contraseña</Btn>
+          <Btn onClick={savePass} color={C.blue} style={{ width: "100%" }} disabled={guardandoPass}>Guardar contraseña</Btn>
         </Card>
 
         {/* PINs de barcos */}

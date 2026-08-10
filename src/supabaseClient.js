@@ -37,5 +37,5 @@ export async function cambiarPassOficinista(actualPass, newPass) {
     p_nueva: newPass,
   });
   if (error) throw error;
-  if (data !== true) throw new Error("Contraseña actual incorrecta");
+  return data === true;
 }

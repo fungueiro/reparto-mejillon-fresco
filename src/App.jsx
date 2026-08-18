@@ -42,6 +42,40 @@ const getCupoCiclo = (b) =>
 
 const recalc = (arr) => arr.map((s, i) => ({ ...s, posicion: i + 1 }));
 
+/* ── ORDEN CRONOLÓGICO DE LA COLA ──────────────────────────
+   Cada slot guarda en `ultimoTurno` la fecha (YYYY-MM-DD) del pedido en el que
+   completó su último turno, es decir, cuándo rotó al final de la lista. Con eso
+   la cola queda ordenada por antigüedad de turno y un pedido que se registra
+   días o semanas TARDE puede recolocar al barco en el sitio que le habría
+   tocado si se hubiese registrado el propio día del pedido: por detrás de los
+   barcos que rotaron antes o ese mismo día, y por DELANTE de los que ya han
+   rotado después. Con la fecha de hoy (caso normal) equivale a ir al final. */
+const turnoFecha = (s) => s.ultimoTurno || "";
+
+// ¿Este pedido llega con retraso? (hay turnos ya registrados posteriores a su fecha)
+function esPedidoRetro(fecha, slots, historial) {
+  if (!fecha) return false;
+  return (slots || []).some((s) => turnoFecha(s) > fecha) ||
+         (historial || []).some((p) => (p.fecha || "") > fecha);
+}
+
+// Inserta en `arr` un slot que acaba de completar su turno con fecha `fecha`,
+// justo delante del primer barco que rotó DESPUÉS de esa fecha.
+function insertPorTurno(arr, slot, fecha) {
+  const f = fecha || hoy();
+  const idx = arr.findIndex((s) => turnoFecha(s) > f);
+  if (idx === -1) arr.push(slot);
+  else arr.splice(idx, 0, slot);
+  return arr;
+}
+
+// Rota el slot que está al frente al lugar que le corresponde por fecha,
+// dejándolo marcado con el turno consumido en `fecha`.
+function rotarFrente(arr, extra, fecha) {
+  const [s, ...rest] = arr;
+  return recalc(insertPorTurno(rest, { ...s, ...extra, ultimoTurno: fecha || hoy() }, fecha));
+}
+
 function isBoatFullyClosed(cierres, barcoId, barcos) {
   const activos = cierres.filter((x) => x.barcoId === barcoId && !x.fechaFin);
   if (activos.length === 0) return false;
@@ -96,7 +130,8 @@ function insertAlFinalDeCobrando(arr, slot) {
   else { arr.splice(firstNonCob, 0, slot); }
 }
 
-function processAssignment(slots, barcos, cierres, slotId, bolsas) {
+function processAssignment(slots, barcos, cierres, slotId, bolsas, fechaPedido) {
+  const fechaTurno = fechaPedido || hoy();
   let arr = slots.map((s) => ({ ...s }));
   let nc  = cierres.map((c) => ({ ...c }));
   const idx = arr.findIndex((s) => s.id === slotId);
@@ -159,10 +194,14 @@ function processAssignment(slots, barcos, cierres, slotId, bolsas) {
   const nextEstado = barco && isEspecial(barco.numBateas) ? "saltando_turno" : "en_espera";
   const selfAjuste = !sib && ajuste !== 0 ? ajuste : 0;
   arr = arr.map((s) =>
-    s.id === slotId ? { ...s, bolsasEntregadas: 0, ajusteBolsas: selfAjuste, estado: nextEstado, anclaId: null } : s
+    s.id === slotId
+      ? { ...s, bolsasEntregadas: 0, ajusteBolsas: selfAjuste, estado: nextEstado, anclaId: null, ultimoTurno: fechaTurno }
+      : s
   );
   const removed = arr.splice(arr.findIndex((s) => s.id === slotId), 1)[0];
-  arr.push(removed);
+  // No va siempre al final: va al final de los turnos de SU fecha, para que un
+  // pedido registrado con retraso quede delante de los barcos servidos después.
+  insertPorTurno(arr, removed, fechaTurno);
   return { newSlots: recalc(arr), newCierres: nc };
 }
 
@@ -185,8 +224,12 @@ function calcularCupoAcumulado(cierre, fechaFin, cierres, barcos, historial) {
   const finTs    = new Date(fechaFin + "T23:59:59").getTime();
 
   // Solo pedidos confirmados DESPUÉS de abrir el cierre y ANTES de cerrarlo
+  // tsOrden = momento efectivo del pedido (su fecha si se registró con retraso)
   const totalBolsas = historial
-    .filter((p) => (p.ts || 0) > cierreTs && (p.ts || 0) <= finTs)
+    .filter((p) => {
+      const t = p.tsOrden ?? p.ts ?? 0;
+      return t > cierreTs && t <= finTs;
+    })
     .reduce((sum, p) => sum + p.lineas.reduce((s, l) => s + l.bolsas, 0), 0);
 
   const totalBateas = barcos.filter((b) => b.activo).reduce((sum, b) => sum + b.numBateas, 0);
@@ -718,10 +761,16 @@ function TabLista({ slots, barcos, cierres, calidadNombre, setSlots, exclusiones
 }
 
 /* ── TAB PEDIDO ────────────────────────────────────────────── */
-function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial, pedidoActivo, setPedidoActivo,
+function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial, historial, pedidoActivo, setPedidoActivo,
                      exclusiones, setExclusiones, rechazos, setRechazos, calidadActiva, snapshot }) {
   const [fecha, setFecha] = useState(hoy());
   const [desc,  setDesc]  = useState("");
+
+  // Pedido registrado con retraso: ya hay turnos posteriores a su fecha
+  const retro = useMemo(
+    () => esPedidoRetro(fecha, slots, historial),
+    [fecha, slots, historial]
+  );
 
   const excluidoSet = useMemo(
     () => new Set(exclusiones.filter((e) => e.calidadId === calidadActiva && !e.fechaFin).map((e) => e.barcoId)),
@@ -752,8 +801,7 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
     let cur = [...slots]; let changed = false;
     // Avanza barcos saltando_turno al frente
     while (cur.length > 0 && cur[0].estado === "saltando_turno") {
-      const [s, ...rest] = cur;
-      cur = recalc([...rest, { ...s, estado: "en_espera", bolsasEntregadas: 0, ajusteBolsas: 0 }]);
+      cur = rotarFrente(cur, { estado: "en_espera", bolsasEntregadas: 0, ajusteBolsas: 0 }, fecha);
       changed = true;
     }
     // FIX: avanza barcos bloqueados (cupo ≤ 0, sin acumulado, no cobrando) al final
@@ -764,9 +812,8 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
       const acum     = acumuladoPendiente(front.barcoId, cierres);
       const esCerradoTotal = isBoatFullyClosed(cierres, front.barcoId, barcos);
       if (restante <= 0 && acum <= 0 && front.estado !== "cobrando" && !esCerradoTotal) {
-        const [s, ...rest] = cur;
-        // Perdona deuda y rota al final
-        cur = recalc([...rest, { ...s, bolsasEntregadas: 0, ajusteBolsas: Math.max(0, s.ajusteBolsas), estado: "en_espera" }]);
+        // Perdona deuda y rota al lugar que le toca por fecha
+        cur = rotarFrente(cur, { bolsasEntregadas: 0, ajusteBolsas: Math.max(0, front.ajusteBolsas), estado: "en_espera" }, fecha);
         changed = true;
         safety++;
       } else break;
@@ -788,6 +835,7 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
 
   const confirmar = () => {
     if (!pedidoActivo) return;
+    const retroConfirmado = esPedidoRetro(pedidoActivo.fecha, slots, historial);
     snapshot && snapshot(`Confirmar pedido — ${pedidoActivo.fecha}`);
     let ns = [...slots]; let nc = [...cierres];
     let nuevosRechazos = { ...rechazos };
@@ -802,7 +850,7 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
         const b = parseInt(asig.bolsas) || 0;
         if (b > 0) {
           lineas.push({ barcoNombre: asig.barcoNombre, bolsas: b });
-          const r = processAssignment(ns, barcos, nc, asig.slotId, b);
+          const r = processAssignment(ns, barcos, nc, asig.slotId, b, pedidoActivo.fecha);
           ns = r.newSlots; nc = r.newCierres;
           nuevosRechazos[key] = 0;
         }
@@ -828,7 +876,9 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
             });
             const afectados   = ns.filter((s) => s.barcoId === asig.barcoId && s.estado === "en_espera" && s.bolsasEntregadas === 0);
             const noAfectados = ns.filter((s) => !(s.barcoId === asig.barcoId && afectados.find((a) => a.id === s.id)));
-            ns = recalc([...noAfectados, ...afectados]);
+            ns = [...noAfectados];
+            afectados.forEach((s) => insertPorTurno(ns, { ...s, ultimoTurno: pedidoActivo.fecha }, pedidoActivo.fecha));
+            ns = recalc(ns);
           } else {
             nuevosRechazos[key] = cuenta;
           }
@@ -877,7 +927,22 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
     }
 
     setSlots(ns); setCierres(nc); setRechazos(nuevosRechazos);
-    setHistorial((h) => [{ id: uid(), fecha: pedidoActivo.fecha, desc: pedidoActivo.desc, lineas, ts: Date.now() }, ...h]);
+    // El pedido se guarda en su sitio por fecha (el historial va de más nuevo a
+    // más viejo) y con tsOrden = momento efectivo, para que un pedido tardío
+    // cuente en el período que le corresponde (p. ej. cupos de cierres).
+    const ahora = Date.now();
+    const nuevoPedido = {
+      id: uid(), fecha: pedidoActivo.fecha, desc: pedidoActivo.desc, lineas,
+      ts: ahora,
+      tsOrden: retroConfirmado ? new Date(pedidoActivo.fecha + "T12:00:00").getTime() : ahora,
+      ...(retroConfirmado ? { registradoTarde: true } : {}),
+    };
+    setHistorial((h) => {
+      const arr = [...h];
+      const i = arr.findIndex((p) => (p.fecha || "") <= nuevoPedido.fecha);
+      if (i === -1) arr.push(nuevoPedido); else arr.splice(i, 0, nuevoPedido);
+      return arr;
+    });
     setPedidoActivo(null);
   };
 
@@ -887,7 +952,16 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
         <SectionTitle>📦 Nuevo Pedido</SectionTitle>
         <Card>
           <Label>Fecha del pedido</Label>
-          <Input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ marginBottom: 14 }} />
+          <Input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ marginBottom: retro ? 10 : 14 }} />
+          {retro && (
+            <div style={{ background: "#1a2f45", border: `1px solid ${C.accent}55`, borderRadius: 10,
+                          padding: "10px 12px", marginBottom: 14, fontSize: 12, color: C.textMid, lineHeight: 1.5 }}>
+              <strong style={{ color: C.accentL }}>Pedido con fecha anterior a la última registrada.</strong><br />
+              Se registrará como del <span className="mono">{fecha}</span>: cada barco que sirva y agote su turno
+              volverá al lugar de la lista que le habría tocado ese día — por delante de los barcos ya servidos
+              después — en lugar de ir al final.
+            </div>
+          )}
           <Label>Descripción <span style={{ color: C.textDim, fontWeight: 400 }}>(opcional)</span></Label>
           <Input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="ej. Mercadona · 2 toneladas" style={{ marginBottom: 20 }} />
           <Btn onClick={iniciar} disabled={!candidatosBase.length} color={C.accent} style={{ width: "100%", color: "#000" }}>
@@ -911,6 +985,11 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
         <div>
           <SectionTitle style={{ marginBottom: 4 }}>📦 Pedido — {pedidoActivo.fecha}</SectionTitle>
           {pedidoActivo.desc && <div style={{ fontSize: 13, color: C.textMid }}>{pedidoActivo.desc}</div>}
+          {esPedidoRetro(pedidoActivo.fecha, slots, historial) && (
+            <div style={{ fontSize: 12, color: C.accentL, marginTop: 4 }}>
+              ⏱ Registro tardío — la lista se recolocará con fecha {pedidoActivo.fecha}
+            </div>
+          )}
         </div>
         <div className="mono" style={{ background: "#1a2f45", border: `1px solid ${C.accent}40`, color: C.accent, padding: "6px 16px", borderRadius: 24, fontSize: 14, fontWeight: 700 }}>
           {totalAcep} bolsas asignadas
@@ -1152,14 +1231,22 @@ function ModalImportarLista({ barcos, slots, setSlots, setBarcos, setSlotsTodas,
       const bSlots = slotsPorBarco[b.id] || [];
       const idx = cicloIdx[b.id] || 0;
       if (idx < bSlots.length) {
+        // El orden del Excel pasa a ser el punto de partida: se limpia la fecha
+        // de último turno para que no contradiga al orden manual.
         const slot = haySaldo ? { ...bSlots[idx], ajusteBolsas: fila.saldo || 0 } : { ...bSlots[idx] };
+        delete slot.ultimoTurno;
         ordenados.push(slot);
         usados.add(bSlots[idx].id);
         cicloIdx[b.id] = idx + 1;
       }
     });
     // Conservar al final cualquier slot no cubierto por la importación
-    currentSlots.forEach((s) => { if (!usados.has(s.id)) ordenados.push({ ...s }); });
+    currentSlots.forEach((s) => {
+      if (usados.has(s.id)) return;
+      const resto = { ...s };
+      delete resto.ultimoTurno;
+      ordenados.push(resto);
+    });
     return recalc(ordenados);
   };
 
@@ -1926,6 +2013,11 @@ function TabHistorial({ historial, calidadNombre, setHistorial, snapshot }) {
                   <div>
                     <span className="cond" style={{ fontSize: 18, fontWeight: 700, color: C.text }}>{p.fecha}</span>
                     {p.desc && <span style={{ marginLeft: 10, fontSize: 13, color: C.textMid }}>{p.desc}</span>}
+                    {p.registradoTarde && (
+                      <span className="mono" title="Registrado después del día del pedido; la lista se recolocó con esta fecha"
+                        style={{ marginLeft: 10, fontSize: 10, color: C.accentL, border: `1px solid ${C.accent}55`,
+                                 borderRadius: 20, padding: "2px 8px" }}>⏱ registro tardío</span>
+                    )}
                   </div>
                   <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: C.accent, background: "#1a2f00", border: `1px solid ${C.accent}40`, padding: "3px 12px", borderRadius: 20 }}>
                     {total} bolsas · {p.lineas.length} barco{p.lineas.length !== 1 ? "s" : ""}
@@ -2636,7 +2728,7 @@ export default function App() {
 
         <main style={{ maxWidth: 960, margin: "0 auto", padding: "28px 24px" }}>
           {tab === "lista"     && <TabLista      slots={slots} barcos={barcos} cierres={cierres} calidadNombre={calidadNombre} setSlots={setSlots} exclusiones={exclusiones} calidadActiva={calidadActiva} />}
-          {tab === "pedido"    && <TabPedido     slots={slots} barcos={barcos} cierres={cierres} setCierres={setCierres} setSlots={setSlots} setHistorial={setHistorial} pedidoActivo={pedidoActivo} setPedidoActivo={setPedidoActivo} calidadNombre={calidadNombre} exclusiones={exclusiones} setExclusiones={setExclusiones} rechazos={rechazos} setRechazos={setRechazos} calidadActiva={calidadActiva} snapshot={snapshot} />}
+          {tab === "pedido"    && <TabPedido     slots={slots} barcos={barcos} cierres={cierres} setCierres={setCierres} setSlots={setSlots} setHistorial={setHistorial} historial={historial} pedidoActivo={pedidoActivo} setPedidoActivo={setPedidoActivo} calidadNombre={calidadNombre} exclusiones={exclusiones} setExclusiones={setExclusiones} rechazos={rechazos} setRechazos={setRechazos} calidadActiva={calidadActiva} snapshot={snapshot} />}
           {tab === "barcos"    && <TabBarcos     barcos={barcos} slots={slots} cierres={cierres} listas={listas} calidades={calidades} calidadNombre={calidadNombre} setBarcos={setBarcos} setSlots={setSlots} setSlotsTodas={setSlotsTodas} setCierres={setCierres} snapshot={snapshot} />}
           {tab === "cierres"   && <TabCierres    barcos={barcos} cierres={cierres} setCierres={setCierres} historial={historial} snapshot={snapshot} />}
           {tab === "exclusiones" && <TabExclusiones barcos={barcos} exclusiones={exclusiones} setExclusiones={setExclusiones} calidades={calidades} calidadActiva={calidadActiva} snapshot={snapshot} />}

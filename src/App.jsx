@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
-import { cargarEstadoRemoto, guardarEstadoRemoto, validarOficinista, cambiarPassOficinista } from "./supabaseClient";
+import { cargarEstadoRemoto, guardarEstadoRemoto, iniciarSesion, cerrarSesion, cambiarPass, hayPassPatron } from "./supabaseClient";
 
 const GlobalStyles = () => (
   <style>{`
@@ -420,23 +420,27 @@ function DataTable({ cols, rows, empty = "Sin datos" }) {
 }
 
 /* ── PANTALLA DE LOGIN ─────────────────────────────────────── */
-function LoginScreen({ barcos, onLoginOficinista, onLoginPatron }) {
+function LoginScreen({ barcos, onClave, onLoginOficinista, onLoginPatron }) {
   const [modo,   setModo]   = useState(null); // null | 'oficinista' | 'patron'
   const [pass,   setPass]   = useState("");
+  const [claveOk,setClaveOk]= useState(false); // patrón: clave validada, toca barco + PIN
   const [barcoId,setBarcoId]= useState("");
   const [pin,    setPin]    = useState("");
   const [error,  setError]  = useState("");
   const [cargando, setCargando] = useState(false);
 
-  const loginOficinista = async () => {
+  // Sin clave válida no se descarga ningún dato: la lista de barcos del paso
+  // siguiente solo existe después de esto.
+  const entrarConClave = async (destino) => {
     if (cargando) return;
     setCargando(true); setError("");
     try {
-      const ok = await validarOficinista(pass);
-      if (ok) { onLoginOficinista(); }
-      else setError("Contraseña incorrecta");
-    } catch (_) {
-      setError("Sin conexión con el servidor. Revisa tu internet.");
+      const r = await onClave(pass, destino);
+      if (r.error === "clave")   { setError("Contraseña incorrecta"); return; }
+      if (r.error === "rol")     { setError("Esa clave no es la de oficinista"); return; }
+      if (r.error === "red")     { setError("Sin conexión con el servidor. Revisa tu internet."); return; }
+      if (destino === "oficinista") onLoginOficinista();
+      else { setClaveOk(true); setPass(""); }
     } finally {
       setCargando(false);
     }
@@ -472,7 +476,7 @@ function LoginScreen({ barcos, onLoginOficinista, onLoginPatron }) {
             { id: "oficinista", label: "Oficinista", icon: "🗂️", desc: "Gestión de pedidos, flota e informes" },
             { id: "patron",     label: "Socio / Patrón", icon: "⚓", desc: "Consulta tu posición en lista" },
           ].map((m) => (
-            <button key={m.id} onClick={() => { setModo(m.id); setError(""); setPass(""); setPin(""); }}
+            <button key={m.id} onClick={() => { setModo(m.id); setError(""); setPass(""); setPin(""); setClaveOk(false); }}
               style={{ background: C.surface, border: `1px solid ${C.border2}`, borderRadius: 16, padding: "28px 36px",
                 cursor: "pointer", textAlign: "center", width: 220, transition: "border-color .15s" }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>{m.icon}</div>
@@ -490,17 +494,37 @@ function LoginScreen({ barcos, onLoginOficinista, onLoginPatron }) {
           <Label>Contraseña</Label>
           <Input type="password" value={pass} onChange={(e) => setPass(e.target.value)}
             placeholder="••••••" style={{ marginBottom: 16 }}
-            onKeyDown={(e) => e.key === "Enter" && loginOficinista()} />
+            onKeyDown={(e) => e.key === "Enter" && entrarConClave("oficinista")} />
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={loginOficinista} color={C.blue} disabled={cargando} style={{ flex: 1 }}>{cargando ? "Comprobando…" : "Entrar"}</Btn>
+            <Btn onClick={() => entrarConClave("oficinista")} color={C.blue} disabled={cargando} style={{ flex: 1 }}>{cargando ? "Comprobando…" : "Entrar"}</Btn>
             <Btn outline onClick={() => { setModo(null); setError(""); }}>Volver</Btn>
           </div>
         </Card>
       )}
 
-      {modo === "patron" && (
+      {modo === "patron" && !claveOk && (
         <Card style={{ width: "100%", maxWidth: 360 }}>
           <div className="cond" style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 16 }}>⚓ Acceso Socio / Patrón</div>
+          {error && <div style={{ fontSize: 12, color: C.red, background: "#1f0808", borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>{error}</div>}
+          <Label>Clave de acceso</Label>
+          <Input type="password" value={pass} onChange={(e) => setPass(e.target.value)}
+            placeholder="••••••" style={{ marginBottom: 8 }}
+            onKeyDown={(e) => e.key === "Enter" && entrarConClave("patron")} />
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 16, lineHeight: 1.5 }}>
+            La clave común de socios. Si no la tienes, pídesela a la oficina.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn onClick={() => entrarConClave("patron")} color={C.accent} disabled={cargando} style={{ flex: 1, color: "#000" }}>
+              {cargando ? "Comprobando…" : "Continuar"}
+            </Btn>
+            <Btn outline onClick={() => { setModo(null); setError(""); }}>Volver</Btn>
+          </div>
+        </Card>
+      )}
+
+      {modo === "patron" && claveOk && (
+        <Card style={{ width: "100%", maxWidth: 360 }}>
+          <div className="cond" style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 16 }}>⚓ Tu barco</div>
           {error && <div style={{ fontSize: 12, color: C.red, background: "#1f0808", borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>{error}</div>}
           <Label>Tu barco</Label>
           <Sel value={barcoId} onChange={(e) => setBarcoId(e.target.value)} style={{ marginBottom: 12 }}>
@@ -515,7 +539,7 @@ function LoginScreen({ barcos, onLoginOficinista, onLoginPatron }) {
             onKeyDown={(e) => e.key === "Enter" && loginPatron()} />
           <div style={{ display: "flex", gap: 8 }}>
             <Btn onClick={loginPatron} color={C.accent} style={{ flex: 1, color: "#000" }}>Entrar</Btn>
-            <Btn outline onClick={() => { setModo(null); setError(""); }}>Volver</Btn>
+            <Btn outline onClick={() => { setClaveOk(false); setError(""); setPin(""); }}>Volver</Btn>
           </div>
         </Card>
       )}
@@ -2224,14 +2248,24 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
   const [confirmPass,setConfirmPass]= useState("");
   const [passMsg,    setPassMsg]    = useState("");
   const [guardandoPass, setGuardandoPass] = useState(false);
+  const [passOficinista,  setPassOficinista]  = useState("");
+  const [claveSocios,     setClaveSocios]     = useState("");
+  const [claveSociosRep,  setClaveSociosRep]  = useState("");
+  const [sociosMsg,       setSociosMsg]       = useState("");
+  const [guardandoSocios, setGuardandoSocios] = useState(false);
+  const [hayClaveSocios,  setHayClaveSocios]  = useState(null); // null = comprobando
   const [pins,       setPins]       = useState(() => Object.fromEntries(barcos.map((b) => [b.id, b.pin || "0000"])));
 
+  useEffect(() => {
+    hayPassPatron().then(setHayClaveSocios).catch(() => setHayClaveSocios(null));
+  }, []);
+
   const savePass = async () => {
-    if (newPass.length < 4) { setPassMsg("Mínimo 4 caracteres"); return; }
+    if (newPass.length < 6) { setPassMsg("Mínimo 6 caracteres"); return; }
     if (newPass !== confirmPass) { setPassMsg("Las contraseñas no coinciden"); return; }
     setGuardandoPass(true); setPassMsg("Guardando…");
     try {
-      const ok = await cambiarPassOficinista(actualPass, newPass);
+      const ok = await cambiarPass(actualPass, "oficinista", newPass);
       if (ok) {
         setActualPass(""); setNewPass(""); setConfirmPass("");
         setPassMsg("✓ Contraseña actualizada");
@@ -2239,10 +2273,34 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
       } else {
         setPassMsg("✗ La contraseña actual no es correcta");
       }
-    } catch (_) {
-      setPassMsg("✗ Sin conexión con el servidor");
+    } catch (e) {
+      setPassMsg(e?.message?.includes("6 caracteres") ? "✗ Mínimo 6 caracteres" : "✗ La contraseña actual no es correcta");
     } finally {
       setGuardandoPass(false);
+    }
+  };
+
+  /* Clave común de socios: sin ella, ningún patrón puede entrar. La fija el
+     oficinista y se reparte a los 36 barcos. */
+  const saveClaveSocios = async () => {
+    if (claveSocios.length < 6) { setSociosMsg("Mínimo 6 caracteres"); return; }
+    if (claveSocios !== claveSociosRep) { setSociosMsg("Las claves no coinciden"); return; }
+    if (!passOficinista) { setSociosMsg("Escribe tu contraseña de oficinista"); return; }
+    setGuardandoSocios(true); setSociosMsg("Guardando…");
+    try {
+      const ok = await cambiarPass(passOficinista, "patron", claveSocios);
+      if (ok) {
+        setPassOficinista(""); setClaveSocios(""); setClaveSociosRep("");
+        setHayClaveSocios(true);
+        setSociosMsg("✓ Clave de socios actualizada");
+        setTimeout(() => setSociosMsg(""), 3000);
+      } else {
+        setSociosMsg("✗ Tu contraseña de oficinista no es correcta");
+      }
+    } catch (e) {
+      setSociosMsg(e?.message?.includes("6 caracteres") ? "✗ Mínimo 6 caracteres" : "✗ Tu contraseña de oficinista no es correcta");
+    } finally {
+      setGuardandoSocios(false);
     }
   };
 
@@ -2268,6 +2326,33 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
             onKeyDown={(e) => e.key === "Enter" && savePass()} />
           {passMsg && <div style={{ fontSize: 12, marginBottom: 10, color: passMsg.startsWith("✓") ? C.green : C.red }}>{passMsg}</div>}
           <Btn onClick={savePass} color={C.blue} style={{ width: "100%" }} disabled={guardandoPass}>Guardar contraseña</Btn>
+          <div style={{ fontSize: 11, color: C.textDim, marginTop: 10, lineHeight: 1.5 }}>
+            Con ella se entra a la oficina y es la única que puede modificar datos. Mínimo 6 caracteres.
+          </div>
+        </Card>
+
+        {/* Clave común de socios */}
+        <Card>
+          <div className="cond" style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 14 }}>⚓ Clave de socios</div>
+          {hayClaveSocios === false && (
+            <div style={{ fontSize: 12, color: C.accentL, background: "#1a2f45", border: `1px solid ${C.accent}55`,
+                          borderRadius: 8, padding: "8px 12px", marginBottom: 12, lineHeight: 1.5 }}>
+              Todavía no está configurada. Hasta que la fijes, los patrones no pueden entrar.
+            </div>
+          )}
+          <Label>Tu contraseña de oficinista</Label>
+          <Input type="password" value={passOficinista} onChange={(e) => setPassOficinista(e.target.value)} placeholder="Para autorizar el cambio" style={{ marginBottom: 10 }} />
+          <Label>Clave de socios</Label>
+          <Input type="password" value={claveSocios} onChange={(e) => setClaveSocios(e.target.value)} placeholder="Nueva clave común" style={{ marginBottom: 10 }} />
+          <Label>Confirmar</Label>
+          <Input type="password" value={claveSociosRep} onChange={(e) => setClaveSociosRep(e.target.value)} placeholder="Repetir clave" style={{ marginBottom: 14 }}
+            onKeyDown={(e) => e.key === "Enter" && saveClaveSocios()} />
+          {sociosMsg && <div style={{ fontSize: 12, marginBottom: 10, color: sociosMsg.startsWith("✓") ? C.green : C.red }}>{sociosMsg}</div>}
+          <Btn onClick={saveClaveSocios} color={C.accent} style={{ width: "100%", color: "#000" }} disabled={guardandoSocios}>Guardar clave de socios</Btn>
+          <div style={{ fontSize: 11, color: C.textDim, marginTop: 10, lineHeight: 1.5 }}>
+            Es la misma para los {barcos.length} barcos y solo permite consultar, nunca modificar. Dentro de la app cada patrón sigue entrando con su PIN.
+            Si se filtra, cámbiala aquí y repártela de nuevo.
+          </div>
         </Card>
 
         {/* PINs de barcos */}
@@ -2475,21 +2560,43 @@ export default function App() {
     setTimeout(() => { aplicandoRemoto.current = false; }, 0);
   };
 
-  // Carga inicial: primero caché local (instantáneo), luego Supabase (autoritativo)
-  useEffect(() => {
-    // 1) caché local para pintar algo de inmediato
+  /* Entrada a la aplicación. Ya no hay carga automática al abrir la página:
+     sin una clave de rol válida el servidor no devuelve nada, así que los datos
+     se descargan aquí, después de validar. Devuelve { rol } o { error }. */
+  const entrarConClave = async (pass, destino) => {
+    let rol;
+    try {
+      rol = await iniciarSesion(pass);
+    } catch (_) {
+      return { error: "red" };
+    }
+    if (!rol) return { error: "clave" };
+    if (destino === "oficinista" && rol !== "oficinista") { cerrarSesion(); return { error: "rol" }; }
+
+    // 1) caché local del propio dispositivo, para pintar algo de inmediato
     try {
       const raw = localStorage.getItem("mejillon-state");
       if (raw) aplicarEstado(JSON.parse(raw));
     } catch (_) {}
-    // 2) estado remoto
-    (async () => {
+    // 2) estado remoto (autoritativo)
+    try {
       const remoto = await cargarEstadoRemoto();
       if (remoto) { aplicarEstado(remoto); setEstadoRed("online"); }
       else setEstadoRed("offline");
-      setLoaded(true);
-    })();
-  }, []);
+    } catch (_) {
+      setEstadoRed("offline");
+    }
+    setLoaded(true);
+    return { rol };
+  };
+
+  // Cierra la sesión: la clave desaparece de memoria y se corta el sondeo.
+  const salir = () => {
+    cerrarSesion();
+    setRole(null);
+    setPatronBarcoId(null);
+    setLoaded(false);
+  };
 
   // Guardado: el oficinista escribe en Supabase; todos guardan caché local
   useEffect(() => {
@@ -2507,8 +2614,12 @@ export default function App() {
     if (!loaded) return;
     const id = setInterval(async () => {
       if (role === "oficinista" && pedidoActivo) return; // no pisar trabajo en curso
-      const remoto = await cargarEstadoRemoto();
-      if (remoto) { aplicarEstado(remoto); setEstadoRed("online"); }
+      try {
+        const remoto = await cargarEstadoRemoto();
+        if (remoto) { aplicarEstado(remoto); setEstadoRed("online"); }
+      } catch (_) {
+        setEstadoRed("offline");
+      }
     }, 5000);
     return () => clearInterval(id);
   }, [loaded, role, pedidoActivo]);
@@ -2568,33 +2679,11 @@ export default function App() {
     if (calidadActiva === cid) setCalidadActiva(calidades.find((c) => c.id !== cid)?.id ?? "");
   };
 
-  if (!loaded) {
-    return (
-      <>
-        <GlobalStyles />
-        <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", color: C.textMid }}>
-          <div style={{ textAlign: "center" }}>
-            <svg width="64" height="64" viewBox="0 0 48 48" style={{ marginBottom: 16 }}>
-              <rect x="8" y="14" width="32" height="5" rx="1.5" fill="#f59e0b"/>
-              <line x1="13" y1="19" x2="13" y2="40" stroke="#3b82f6" strokeWidth="1.6"/>
-              <line x1="19" y1="19" x2="19" y2="44" stroke="#3b82f6" strokeWidth="1.6"/>
-              <line x1="24" y1="19" x2="24" y2="42" stroke="#3b82f6" strokeWidth="1.6"/>
-              <line x1="29" y1="19" x2="29" y2="44" stroke="#3b82f6" strokeWidth="1.6"/>
-              <line x1="35" y1="19" x2="35" y2="40" stroke="#3b82f6" strokeWidth="1.6"/>
-              <path d="M4 44 Q12 40 20 44 T36 44 T52 44" fill="none" stroke="#7a99b8" strokeWidth="1.5" opacity="0.6"/>
-            </svg>
-            Cargando datos...
-          </div>
-        </div>
-      </>
-    );
-  }
-
   if (!role) {
     return (
       <>
         <GlobalStyles />
-        <LoginScreen barcos={barcos}
+        <LoginScreen barcos={barcos} onClave={entrarConClave}
           onLoginOficinista={() => { setRole("oficinista"); setTab("lista"); }}
           onLoginPatron={(bid) => { setRole("patron"); setPatronBarcoId(bid); }} />
       </>
@@ -2622,7 +2711,7 @@ export default function App() {
               {barco?.nombre}
               
             </div>
-            <button onClick={() => { setRole(null); setPatronBarcoId(null); }}
+            <button onClick={salir}
               style={{ background: "transparent", border: `1px solid ${C.border2}`, color: C.textMid, padding: "5px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>
               Cerrar sesión
             </button>
@@ -2648,6 +2737,29 @@ export default function App() {
 
   /* ── VISTA OFICINISTA ── */
   const calidadNombre = calidades.find((c) => c.id === calidadActiva)?.nombre ?? "";
+
+  if (!loaded) {
+    // Solo se llega aquí con sesión abierta: la descarga ya está en marcha.
+    return (
+      <>
+        <GlobalStyles />
+        <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", color: C.textMid }}>
+          <div style={{ textAlign: "center" }}>
+            <svg width="64" height="64" viewBox="0 0 48 48" style={{ marginBottom: 16 }}>
+              <rect x="8" y="14" width="32" height="5" rx="1.5" fill="#f59e0b"/>
+              <line x1="13" y1="19" x2="13" y2="40" stroke="#3b82f6" strokeWidth="1.6"/>
+              <line x1="19" y1="19" x2="19" y2="44" stroke="#3b82f6" strokeWidth="1.6"/>
+              <line x1="24" y1="19" x2="24" y2="42" stroke="#3b82f6" strokeWidth="1.6"/>
+              <line x1="29" y1="19" x2="29" y2="44" stroke="#3b82f6" strokeWidth="1.6"/>
+              <line x1="35" y1="19" x2="35" y2="40" stroke="#3b82f6" strokeWidth="1.6"/>
+              <path d="M4 44 Q12 40 20 44 T36 44 T52 44" fill="none" stroke="#7a99b8" strokeWidth="1.5" opacity="0.6"/>
+            </svg>
+            Cargando datos...
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -2693,7 +2805,7 @@ export default function App() {
               {ultimaAccion}
             </span>
           )}
-          <button onClick={() => setRole(null)} style={{ background: "transparent", border: `1px solid ${C.border2}`, color: C.textMid, padding: "5px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>
+          <button onClick={salir} style={{ background: "transparent", border: `1px solid ${C.border2}`, color: C.textMid, padding: "5px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>
             Cerrar sesión
           </button>
         </header>

@@ -1,6 +1,9 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
-import { cargarEstadoRemoto, guardarEstadoRemoto, iniciarSesion, cerrarSesion, cambiarPass, hayPassPatron } from "./supabaseClient";
+import {
+  cargarEstadoRemoto, guardarEstadoRemoto, iniciarSesion, cerrarSesion, cambiarPass,
+  listarBarcos, entrarPatron, cambiarPinBarco, contarBarcosSinPin,
+} from "./supabaseClient";
 
 const GlobalStyles = () => (
   <style>{`
@@ -420,36 +423,50 @@ function DataTable({ cols, rows, empty = "Sin datos" }) {
 }
 
 /* ── PANTALLA DE LOGIN ─────────────────────────────────────── */
-function LoginScreen({ barcos, onClave, onLoginOficinista, onLoginPatron }) {
+function LoginScreen({ onClave, onPatron, onLoginOficinista, onLoginPatron }) {
   const [modo,   setModo]   = useState(null); // null | 'oficinista' | 'patron'
   const [pass,   setPass]   = useState("");
-  const [claveOk,setClaveOk]= useState(false); // patrón: clave validada, toca barco + PIN
   const [barcoId,setBarcoId]= useState("");
   const [pin,    setPin]    = useState("");
   const [error,  setError]  = useState("");
   const [cargando, setCargando] = useState(false);
+  // El desplegable se pide al servidor: devuelve solo id y nombre, ningún PIN.
+  const [listaBarcos, setListaBarcos] = useState(null);
 
-  // Sin clave válida no se descarga ningún dato: la lista de barcos del paso
-  // siguiente solo existe después de esto.
-  const entrarConClave = async (destino) => {
+  useEffect(() => {
+    if (modo !== "patron" || listaBarcos) return;
+    let vivo = true;
+    listarBarcos()
+      .then((bs) => { if (vivo) setListaBarcos(bs); })
+      .catch(() => { if (vivo) { setListaBarcos([]); setError("Sin conexión con el servidor."); } });
+    return () => { vivo = false; };
+  }, [modo, listaBarcos]);
+
+  const entrarConClave = async () => {
     if (cargando) return;
     setCargando(true); setError("");
     try {
-      const r = await onClave(pass, destino);
-      if (r.error === "clave")   { setError("Contraseña incorrecta"); return; }
-      if (r.error === "rol")     { setError("Esa clave no es la de oficinista"); return; }
-      if (r.error === "red")     { setError("Sin conexión con el servidor. Revisa tu internet."); return; }
-      if (destino === "oficinista") onLoginOficinista();
-      else { setClaveOk(true); setPass(""); }
+      const r = await onClave(pass);
+      if (r.error === "clave") { setError("Contraseña incorrecta"); return; }
+      if (r.error === "red")   { setError("Sin conexión con el servidor. Revisa tu internet."); return; }
+      onLoginOficinista();
     } finally {
       setCargando(false);
     }
   };
-  const loginPatron = () => {
-    const b = barcos.find((x) => x.id === barcoId);
-    if (!b) { setError("Selecciona un barco"); return; }
-    if (pin === b.pin) { setError(""); onLoginPatron(barcoId); }
-    else setError("PIN incorrecto");
+
+  const loginPatron = async () => {
+    if (cargando) return;
+    if (!barcoId) { setError("Selecciona un barco"); return; }
+    setCargando(true); setError("");
+    try {
+      const r = await onPatron(barcoId, pin);
+      if (r.error === "pin") { setError("PIN incorrecto"); return; }
+      if (r.error === "red") { setError("Sin conexión con el servidor. Revisa tu internet."); return; }
+      onLoginPatron(barcoId);
+    } finally {
+      setCargando(false);
+    }
   };
 
   return (
@@ -476,7 +493,7 @@ function LoginScreen({ barcos, onClave, onLoginOficinista, onLoginPatron }) {
             { id: "oficinista", label: "Oficinista", icon: "🗂️", desc: "Gestión de pedidos, flota e informes" },
             { id: "patron",     label: "Socio / Patrón", icon: "⚓", desc: "Consulta tu posición en lista" },
           ].map((m) => (
-            <button key={m.id} onClick={() => { setModo(m.id); setError(""); setPass(""); setPin(""); setClaveOk(false); }}
+            <button key={m.id} onClick={() => { setModo(m.id); setError(""); setPass(""); setPin(""); }}
               style={{ background: C.surface, border: `1px solid ${C.border2}`, borderRadius: 16, padding: "28px 36px",
                 cursor: "pointer", textAlign: "center", width: 220, transition: "border-color .15s" }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>{m.icon}</div>
@@ -494,52 +511,37 @@ function LoginScreen({ barcos, onClave, onLoginOficinista, onLoginPatron }) {
           <Label>Contraseña</Label>
           <Input type="password" value={pass} onChange={(e) => setPass(e.target.value)}
             placeholder="••••••" style={{ marginBottom: 16 }}
-            onKeyDown={(e) => e.key === "Enter" && entrarConClave("oficinista")} />
+            onKeyDown={(e) => e.key === "Enter" && entrarConClave()} />
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={() => entrarConClave("oficinista")} color={C.blue} disabled={cargando} style={{ flex: 1 }}>{cargando ? "Comprobando…" : "Entrar"}</Btn>
+            <Btn onClick={entrarConClave} color={C.blue} disabled={cargando} style={{ flex: 1 }}>{cargando ? "Comprobando…" : "Entrar"}</Btn>
             <Btn outline onClick={() => { setModo(null); setError(""); }}>Volver</Btn>
           </div>
         </Card>
       )}
 
-      {modo === "patron" && !claveOk && (
+      {modo === "patron" && (
         <Card style={{ width: "100%", maxWidth: 360 }}>
           <div className="cond" style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 16 }}>⚓ Acceso Socio / Patrón</div>
           {error && <div style={{ fontSize: 12, color: C.red, background: "#1f0808", borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>{error}</div>}
-          <Label>Clave de acceso</Label>
-          <Input type="password" value={pass} onChange={(e) => setPass(e.target.value)}
-            placeholder="••••••" style={{ marginBottom: 8 }}
-            onKeyDown={(e) => e.key === "Enter" && entrarConClave("patron")} />
-          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 16, lineHeight: 1.5 }}>
-            La clave común de socios. Si no la tienes, pídesela a la oficina.
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={() => entrarConClave("patron")} color={C.accent} disabled={cargando} style={{ flex: 1, color: "#000" }}>
-              {cargando ? "Comprobando…" : "Continuar"}
-            </Btn>
-            <Btn outline onClick={() => { setModo(null); setError(""); }}>Volver</Btn>
-          </div>
-        </Card>
-      )}
-
-      {modo === "patron" && claveOk && (
-        <Card style={{ width: "100%", maxWidth: 360 }}>
-          <div className="cond" style={{ fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 16 }}>⚓ Tu barco</div>
-          {error && <div style={{ fontSize: 12, color: C.red, background: "#1f0808", borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>{error}</div>}
           <Label>Tu barco</Label>
-          <Sel value={barcoId} onChange={(e) => setBarcoId(e.target.value)} style={{ marginBottom: 12 }}>
-            <option value="">Seleccionar barco...</option>
-            {barcos.filter((b) => b.activo).map((b) => (
+          <Sel value={barcoId} onChange={(e) => setBarcoId(e.target.value)} style={{ marginBottom: 12 }} disabled={!listaBarcos}>
+            <option value="">{listaBarcos ? "Seleccionar barco..." : "Cargando barcos…"}</option>
+            {(listaBarcos || []).map((b) => (
               <option key={b.id} value={b.id}>{b.nombre}</option>
             ))}
           </Sel>
           <Label>PIN (4 dígitos)</Label>
           <Input type="password" maxLength={4} value={pin} onChange={(e) => setPin(e.target.value)}
-            placeholder="••••" style={{ marginBottom: 16 }}
+            placeholder="••••" style={{ marginBottom: 8 }}
             onKeyDown={(e) => e.key === "Enter" && loginPatron()} />
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 16, lineHeight: 1.5 }}>
+            Tu PIN de cuatro dígitos. Si no lo tienes o lo has perdido, pídeselo a la oficina.
+          </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={loginPatron} color={C.accent} style={{ flex: 1, color: "#000" }}>Entrar</Btn>
-            <Btn outline onClick={() => { setClaveOk(false); setError(""); setPin(""); }}>Volver</Btn>
+            <Btn onClick={loginPatron} color={C.accent} disabled={cargando} style={{ flex: 1, color: "#000" }}>
+              {cargando ? "Comprobando…" : "Entrar"}
+            </Btn>
+            <Btn outline onClick={() => { setModo(null); setError(""); setPin(""); }}>Volver</Btn>
           </div>
         </Card>
       )}
@@ -1296,7 +1298,7 @@ function ModalImportarLista({ barcos, slots, setSlots, setBarcos, setSlotsTodas,
       filas.forEach((f) => {
         const k = norm(f.nombre);
         if (!newBarcos.find((b) => norm(b.nombre) === k) && bateasPorBarco[k] != null && bateasPorBarco[k] >= 0.5) {
-          newBarcos.push({ id: uid(), nombre: f.nombre.trim(), numBateas: bateasPorBarco[k], activo: true, pin: "0000" });
+          newBarcos.push({ id: uid(), nombre: f.nombre.trim(), numBateas: bateasPorBarco[k], activo: true });
         }
       });
 
@@ -1399,7 +1401,7 @@ function TabBarcos({ barcos, slots, cierres, calidades, listas, calidadNombre, s
     if (!form.nombre.trim() || isNaN(b) || b < 0.5) {
       setErr("Completa todos los campos. Mínimo 0.5 bateas."); return;
     }
-    const nb = { id: uid(), nombre: form.nombre.trim(), numBateas: b, activo: true, pin: "0000" };
+    const nb = { id: uid(), nombre: form.nombre.trim(), numBateas: b, activo: true };
     snapshot && snapshot(`Añadir barco — ${nb.nombre}`);
     const makeNS = (existingSlots) => {
       const ns = makeSlotsForBarco(nb, existingSlots.length + 1);
@@ -2248,17 +2250,17 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
   const [confirmPass,setConfirmPass]= useState("");
   const [passMsg,    setPassMsg]    = useState("");
   const [guardandoPass, setGuardandoPass] = useState(false);
-  const [passOficinista,  setPassOficinista]  = useState("");
-  const [claveSocios,     setClaveSocios]     = useState("");
-  const [claveSociosRep,  setClaveSociosRep]  = useState("");
-  const [sociosMsg,       setSociosMsg]       = useState("");
-  const [guardandoSocios, setGuardandoSocios] = useState(false);
-  const [hayClaveSocios,  setHayClaveSocios]  = useState(null); // null = comprobando
-  const [pins,       setPins]       = useState(() => Object.fromEntries(barcos.map((b) => [b.id, b.pin || "0000"])));
+  // Los PIN no se descargan nunca: la casilla arranca vacía y solo sirve para
+  // fijar uno nuevo. `sinPin` avisa de cuántos barcos siguen sin PIN propio.
+  const [pins,    setPins]    = useState({});
+  const [pinMsg,  setPinMsg]  = useState({});
+  const [sinPin,  setSinPin]  = useState(null);
 
   useEffect(() => {
-    hayPassPatron().then(setHayClaveSocios).catch(() => setHayClaveSocios(null));
-  }, []);
+    let vivo = true;
+    contarBarcosSinPin().then((n) => { if (vivo) setSinPin(n); }).catch(() => {});
+    return () => { vivo = false; };
+  }, [barcos]);
 
   const savePass = async () => {
     if (newPass.length < 6) { setPassMsg("Mínimo 6 caracteres"); return; }
@@ -2282,32 +2284,23 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
 
   /* Clave común de socios: sin ella, ningún patrón puede entrar. La fija el
      oficinista y se reparte a los 36 barcos. */
-  const saveClaveSocios = async () => {
-    if (claveSocios.length < 6) { setSociosMsg("Mínimo 6 caracteres"); return; }
-    if (claveSocios !== claveSociosRep) { setSociosMsg("Las claves no coinciden"); return; }
-    if (!passOficinista) { setSociosMsg("Escribe tu contraseña de oficinista"); return; }
-    setGuardandoSocios(true); setSociosMsg("Guardando…");
+  const savePin = async (barcoId) => {
+    const pin = pins[barcoId] || "";
+    if (!/^\d{4}$/.test(pin)) { setPinMsg((m) => ({ ...m, [barcoId]: "4 dígitos" })); return; }
+    setPinMsg((m) => ({ ...m, [barcoId]: "…" }));
     try {
-      const ok = await cambiarPass(passOficinista, "patron", claveSocios);
-      if (ok) {
-        setPassOficinista(""); setClaveSocios(""); setClaveSociosRep("");
-        setHayClaveSocios(true);
-        setSociosMsg("✓ Clave de socios actualizada");
-        setTimeout(() => setSociosMsg(""), 3000);
+      if (await cambiarPinBarco(barcoId, pin)) {
+        setPins((x) => ({ ...x, [barcoId]: "" }));
+        setPinMsg((m) => ({ ...m, [barcoId]: "✓" }));
+        setBarcos((bs) => bs.map((b) => (b.id === barcoId ? { ...b, tienePin: true } : b)));
+        contarBarcosSinPin().then(setSinPin).catch(() => {});
+        setTimeout(() => setPinMsg((m) => ({ ...m, [barcoId]: "" })), 2500);
       } else {
-        setSociosMsg("✗ Tu contraseña de oficinista no es correcta");
+        setPinMsg((m) => ({ ...m, [barcoId]: "✗" }));
       }
-    } catch (e) {
-      setSociosMsg(e?.message?.includes("6 caracteres") ? "✗ Mínimo 6 caracteres" : "✗ Tu contraseña de oficinista no es correcta");
-    } finally {
-      setGuardandoSocios(false);
+    } catch (_) {
+      setPinMsg((m) => ({ ...m, [barcoId]: "sin conexión" }));
     }
-  };
-
-  const savePin = (barcoId) => {
-    const pin = pins[barcoId] || "0000";
-    if (!/^\d{4}$/.test(pin)) { alert("El PIN debe ser exactamente 4 dígitos"); return; }
-    setBarcos((bs) => bs.map((b) => b.id === barcoId ? { ...b, pin } : b));
   };
 
   return (
@@ -2331,39 +2324,25 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
           </div>
         </Card>
 
-        {/* Clave común de socios */}
-        <Card>
-          <div className="cond" style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 14 }}>⚓ Clave de socios</div>
-          {hayClaveSocios === false && (
-            <div style={{ fontSize: 12, color: C.accentL, background: "#1a2f45", border: `1px solid ${C.accent}55`,
-                          borderRadius: 8, padding: "8px 12px", marginBottom: 12, lineHeight: 1.5 }}>
-              Todavía no está configurada. Hasta que la fijes, los patrones no pueden entrar.
-            </div>
-          )}
-          <Label>Tu contraseña de oficinista</Label>
-          <Input type="password" value={passOficinista} onChange={(e) => setPassOficinista(e.target.value)} placeholder="Para autorizar el cambio" style={{ marginBottom: 10 }} />
-          <Label>Clave de socios</Label>
-          <Input type="password" value={claveSocios} onChange={(e) => setClaveSocios(e.target.value)} placeholder="Nueva clave común" style={{ marginBottom: 10 }} />
-          <Label>Confirmar</Label>
-          <Input type="password" value={claveSociosRep} onChange={(e) => setClaveSociosRep(e.target.value)} placeholder="Repetir clave" style={{ marginBottom: 14 }}
-            onKeyDown={(e) => e.key === "Enter" && saveClaveSocios()} />
-          {sociosMsg && <div style={{ fontSize: 12, marginBottom: 10, color: sociosMsg.startsWith("✓") ? C.green : C.red }}>{sociosMsg}</div>}
-          <Btn onClick={saveClaveSocios} color={C.accent} style={{ width: "100%", color: "#000" }} disabled={guardandoSocios}>Guardar clave de socios</Btn>
-          <div style={{ fontSize: 11, color: C.textDim, marginTop: 10, lineHeight: 1.5 }}>
-            Es la misma para los {barcos.length} barcos y solo permite consultar, nunca modificar. Dentro de la app cada patrón sigue entrando con su PIN.
-            Si se filtra, cámbiala aquí y repártela de nuevo.
-          </div>
-        </Card>
-
         {/* PINs de barcos */}
         <Card>
           <div className="cond" style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 14 }}>⚓ PINs de Socios (4 dígitos)</div>
+          {sinPin > 0 && (
+            <div style={{ fontSize: 12, color: C.accentL, background: "#1a2f45", border: `1px solid ${C.accent}55`,
+                          borderRadius: 8, padding: "8px 12px", marginBottom: 12, lineHeight: 1.5 }}>
+              Quedan <strong>{sinPin}</strong> barco(s) sin PIN propio. Hasta que se lo pongas, esos socios no pueden entrar.
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {barcos.filter((b) => b.activo).map((b) => (
               <div key={b.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <div style={{ flex: 1, fontSize: 13, color: C.text, fontWeight: 600 }}>{b.nombre}</div>
+                <div style={{ flex: 1, fontSize: 13, color: C.text, fontWeight: 600 }}>
+                  {b.nombre}
+                  {b.tienePin === false && <span style={{ fontSize: 10, color: C.red, marginLeft: 6 }}>sin PIN</span>}
+                </div>
+                {pinMsg[b.id] && <span style={{ fontSize: 11, color: pinMsg[b.id] === "✓" ? C.green : C.red }}>{pinMsg[b.id]}</span>}
                 <input
-                  type="text" maxLength={4} value={pins[b.id] || ""}
+                  type="password" maxLength={4} value={pins[b.id] || ""} placeholder="····"
                   onChange={(e) => setPins((p) => ({ ...p, [b.id]: e.target.value.replace(/\D/g, "").slice(0, 4) }))}
                   className="mono"
                   style={{ width: 70, background: C.navy, border: `1px solid ${C.border2}`, color: C.text,
@@ -2372,6 +2351,11 @@ function TabConfiguracion({ barcos, setBarcos, calidades, addCalidad, deleteCali
                 <Btn small onClick={() => savePin(b.id)} color={C.green}>✓</Btn>
               </div>
             ))}
+          </div>
+          <div style={{ fontSize: 11, color: C.textDim, marginTop: 12, lineHeight: 1.5 }}>
+            Es la única credencial del socio: ya no hay clave común previa. Se guardan cifrados en el servidor y no
+            se pueden volver a leer, ni desde aquí ni desde la base de datos. Si un socio pierde el suyo, ponle uno nuevo.
+            Tras 10 intentos fallidos ese barco queda bloqueado 15 minutos.
           </div>
         </Card>
 
@@ -2563,16 +2547,7 @@ export default function App() {
   /* Entrada a la aplicación. Ya no hay carga automática al abrir la página:
      sin una clave de rol válida el servidor no devuelve nada, así que los datos
      se descargan aquí, después de validar. Devuelve { rol } o { error }. */
-  const entrarConClave = async (pass, destino) => {
-    let rol;
-    try {
-      rol = await iniciarSesion(pass);
-    } catch (_) {
-      return { error: "red" };
-    }
-    if (!rol) return { error: "clave" };
-    if (destino === "oficinista" && rol !== "oficinista") { cerrarSesion(); return { error: "rol" }; }
-
+  const descargarEstado = async () => {
     // 1) caché local del propio dispositivo, para pintar algo de inmediato
     try {
       const raw = localStorage.getItem("mejillon-state");
@@ -2587,7 +2562,32 @@ export default function App() {
       setEstadoRed("offline");
     }
     setLoaded(true);
+  };
+
+  // La oficina entra con su contraseña.
+  const entrarConClave = async (pass) => {
+    let rol;
+    try {
+      rol = await iniciarSesion(pass);
+    } catch (_) {
+      return { error: "red" };
+    }
+    if (!rol) return { error: "clave" };
+    await descargarEstado();
     return { rol };
+  };
+
+  // Los socios entran con su barco y su PIN, sin clave común previa.
+  const entrarComoPatron = async (barcoId, pin) => {
+    let b;
+    try {
+      b = await entrarPatron(barcoId, pin);
+    } catch (_) {
+      return { error: "red" };
+    }
+    if (!b) return { error: "pin" };
+    await descargarEstado();
+    return { barco: b };
   };
 
   // Cierra la sesión: la clave desaparece de memoria y se corta el sondeo.
@@ -2683,7 +2683,7 @@ export default function App() {
     return (
       <>
         <GlobalStyles />
-        <LoginScreen barcos={barcos} onClave={entrarConClave}
+        <LoginScreen onClave={entrarConClave} onPatron={entrarComoPatron}
           onLoginOficinista={() => { setRole("oficinista"); setTab("lista"); }}
           onLoginPatron={(bid) => { setRole("patron"); setPatronBarcoId(bid); }} />
       </>

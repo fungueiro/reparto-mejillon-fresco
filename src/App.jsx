@@ -825,6 +825,18 @@ function TabPedido({ slots, barcos, cierres, setCierres, setSlots, setHistorial,
 
   const iniciar = () => {
     let cur = [...slots]; let changed = false;
+    // FIX: un barco "cobrando" que ya no tiene cupo (restante ≤ 0) nunca sale
+    // en candidatos ni lo rota el bucle de bloqueados, y se quedaba anclado en
+    // su puesto. Se cierra su turno como si sirviese 0 bolsas: rota a su sitio
+    // y el exceso/remanente pasa a su siguiente ciclo, igual que un pedido.
+    cur.filter((s) =>
+      s.estado === "cobrando" &&
+      getRestante(s, cierres, barcos) <= 0 &&
+      !isBoatFullyClosed(cierres, s.barcoId, barcos)
+    ).forEach((s) => {
+      cur = processAssignment(cur, barcos, cierres, s.id, 0, fecha).newSlots;
+      changed = true;
+    });
     // Avanza barcos saltando_turno al frente
     while (cur.length > 0 && cur[0].estado === "saltando_turno") {
       cur = rotarFrente(cur, { estado: "en_espera", bolsasEntregadas: 0, ajusteBolsas: 0 }, fecha);

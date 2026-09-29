@@ -190,7 +190,10 @@ function processAssignment(slots, barcos, cierres, slotId, bolsas, fechaPedido) 
   const normalConsumido = Math.max(0, totalEntregado - acumTotal);
   const normalRem = normalEfectivo - normalConsumido; // + remanente / - exceso
   const ajuste = normalRem;
-  const sib = arr.filter((s) => s.barcoId === slot.barcoId && s.id !== slotId)
+  // El saldo va al siguiente ciclo del barco que NO esté cobrando: si se le
+  // suma a uno que está a mitad de cobro, un exceso puede dejarle sin cupo y
+  // atascado en cabeza (cobrando con restante ≤ 0).
+  const sib = arr.filter((s) => s.barcoId === slot.barcoId && s.id !== slotId && s.estado !== "cobrando")
                  .sort((a, b) => a.posicion - b.posicion)[0];
   if (sib && ajuste !== 0)
     arr = arr.map((s) => s.id === sib.id ? { ...s, ajusteBolsas: s.ajusteBolsas + ajuste } : s);

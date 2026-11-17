@@ -486,7 +486,7 @@ function LoginScreen({ onClave, onPatron, onLoginOficinista, onLoginPatron }) {
             <path d="M4 44 Q12 40 20 44 T36 44 T52 44" fill="none" stroke="#7a99b8" strokeWidth="1.5" opacity="0.6"/>
           </svg>
         </div>
-        <div className="cond" style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: "0.02em" }}>Sistema de Reparto</div>
+        <div className="cond" style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: "0.02em" }}>Reparto de Mejillón Fresco</div>
         <div style={{ fontSize: 12, color: C.textDim, letterSpacing: "0.1em", marginTop: 4 }}>ASOCIACIÓN DE PRODUCTORES DE MEJILLÓN</div>
       </div>
 
@@ -2792,7 +2792,7 @@ export default function App() {
             <path d="M4 44 Q12 40 20 44 T36 44 T52 44" fill="none" stroke="#7a99b8" strokeWidth="1.5" opacity="0.6"/>
           </svg>
           <div>
-            <div className="cond" style={{ fontSize: 18, fontWeight: 800, color: C.text, lineHeight: 1.1 }}>Sistema de Reparto de Pedidos</div>
+            <div className="cond" style={{ fontSize: 18, fontWeight: 800, color: C.text, lineHeight: 1.1 }}>Reparto de Mejillón Fresco</div>
             <div style={{ fontSize: 11, color: C.textDim, letterSpacing: "0.06em" }}>ASOCIACIÓN DE PRODUCTORES DE MEJILLÓN</div>
           </div>
           {pedidoActivo && (

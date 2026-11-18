@@ -553,6 +553,10 @@ function LoginScreen({ onClave, onPatron, onLoginOficinista, onLoginPatron }) {
 }
 
 /* ── HTML COMPARTIDO PARA IMPRIMIR / IMAGEN ────────────────── */
+// Estilos inline de tabla: la imagen (html2canvas) pierde el <style> del <head>
+const TD = "padding:8px 10px;border-bottom:1px solid #ddd;vertical-align:middle;";
+const TH = "background:#1a3a5c;color:#fff;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;";
+
 function buildFilasLista(slots, barcos, cierres, excluidoSet, faltanInfo) {
   const acumIds = new Set(cierres.filter((c) => c.fechaFin && c.cupoAcumulado > c.cupoConsumido).map((c) => c.barcoId));
   return slots.map((s, i) => {
@@ -574,10 +578,10 @@ function buildFilasLista(slots, barcos, cierres, excluidoSet, faltanInfo) {
     const bg = excluido ? "background:#efe9f7" : i % 2 === 1 ? "background:#f5f5f5" : "";
     return `
       <tr style="${bg}">
-        <td style="text-align:center;font-weight:700;font-size:15px">${s.posicion}</td>
-        <td><strong>${b?.nombre ?? "—"}</strong>${flags ? `<br><small style="color:#a05a00">${flags}</small>` : ""}</td>
-                <td style="text-align:center">${b?.numBateas ?? ""}</td>
-        <td style="text-align:right;font-weight:700">${faltanTxt}</td>
+        <td style="${TD}text-align:center;font-weight:700;font-size:15px">${s.posicion}</td>
+        <td style="${TD}"><strong>${b?.nombre ?? "—"}</strong>${flags ? `<br><small style="color:#a05a00">${flags}</small>` : ""}</td>
+        <td style="${TD}text-align:center">${b?.numBateas ?? ""}</td>
+        <td style="${TD}text-align:right;font-weight:700">${faltanTxt}</td>
       </tr>`;
   }).join("");
 }
@@ -601,9 +605,9 @@ function buildListaHTML(slots, barcos, cierres, excluidoSet, faltanInfo, calidad
   </head><body id="cap">
     <h1>${titulo}</h1>
     <p>Asociación de Productores de Mejillón &nbsp;·&nbsp; ${hoy()} &nbsp;·&nbsp; ${slots.length} posiciones</p>
-    <table>
+    <table style="width:100%;border-collapse:collapse">
       <thead><tr>
-        <th class="c">#</th><th>Barco</th><th>Matrícula</th><th class="c">Bateas</th><th class="r">Bolsas para su turno</th>
+        <th class="c" style="${TH}width:8%;text-align:center">#</th><th style="${TH}width:52%">Barco</th><th class="c" style="${TH}width:15%;text-align:center">Bateas</th><th class="r" style="${TH}width:25%;text-align:right">Bolsas para su turno</th>
       </tr></thead>
       <tbody>${filas}</tbody>
     </table>

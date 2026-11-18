@@ -586,7 +586,7 @@ function buildFilasLista(slots, barcos, cierres, excluidoSet, faltanInfo) {
   }).join("");
 }
 
-function buildListaHTML(slots, barcos, cierres, excluidoSet, faltanInfo, calidadNombre, forImage) {
+function buildListaHTML(slots, barcos, cierres, excluidoSet, faltanInfo, calidadNombre, forImage, parte) {
   const filas = buildFilasLista(slots, barcos, cierres, excluidoSet, faltanInfo);
   const titulo = `Lista de Reparto${calidadNombre ? ` — ${calidadNombre}` : ""}`;
   return `<!DOCTYPE html><html lang="es"><head>
@@ -604,7 +604,7 @@ function buildListaHTML(slots, barcos, cierres, excluidoSet, faltanInfo, calidad
     </style>
   </head><body id="cap">
     <h1>${titulo}</h1>
-    <p>Asociación de Productores de Mejillón &nbsp;·&nbsp; ${hoy()} &nbsp;·&nbsp; ${slots.length} posiciones</p>
+    <p>Asociación de Productores de Mejillón &nbsp;·&nbsp; ${hoy()} &nbsp;·&nbsp; ${parte ? parte.total : slots.length} posiciones${parte ? ` &nbsp;·&nbsp; <strong>parte ${parte.i} de ${parte.n}</strong>` : ""}</p>
     <table style="width:100%;border-collapse:collapse">
       <thead><tr>
         <th class="c" style="${TH}width:8%;text-align:center">#</th><th style="${TH}width:52%">Barco</th><th class="c" style="${TH}width:15%;text-align:center">Bateas</th><th class="r" style="${TH}width:25%;text-align:right">Bolsas para su turno</th>
@@ -623,6 +623,10 @@ function imprimirLista(slots, barcos, cierres, excluidoSet, faltanInfo, calidadN
   else alert("El navegador bloqueó la ventana emergente. Permite las ventanas emergentes para este sitio.");
 }
 
+// Filas por imagen: WhatsApp reduce las fotos muy altas y la letra queda
+// borrosa, así que la lista se reparte en varias imágenes más bajas.
+const FILAS_POR_IMAGEN = 20;
+
 async function descargarImagen(slots, barcos, cierres, excluidoSet, faltanInfo, calidadNombre) {
   // Carga html2canvas desde CDN si no está
   if (!window.html2canvas) {
@@ -633,23 +637,33 @@ async function descargarImagen(slots, barcos, cierres, excluidoSet, faltanInfo, 
       document.head.appendChild(sc);
     });
   }
-  const html = buildListaHTML(slots, barcos, cierres, excluidoSet, faltanInfo, calidadNombre, true);
-  const cont = document.createElement("div");
-  cont.style.cssText = "position:fixed;left:-9999px;top:0;";
-  cont.innerHTML = html.replace(/<!DOCTYPE[\s\S]*?<body id="cap">/, '<div id="cap" style="width:680px;padding:24px;background:#fff;font-family:Arial,sans-serif;font-size:13px;color:#000">').replace("</body></html>", "</div>");
-  // Re-inserta estilos inline para que html2canvas los respete
-  document.body.appendChild(cont);
+  // Partes de tamaño parecido (57 filas → 19 + 19 + 19)
+  const n = Math.max(1, Math.ceil(slots.length / FILAS_POR_IMAGEN));
+  const porParte = Math.ceil(slots.length / n) || 1;
   try {
-    const node = cont.querySelector("#cap");
-    const canvas = await window.html2canvas(node, { scale: 2, backgroundColor: "#fff" });
-    const link = document.createElement("a");
-    link.download = `lista_reparto_${calidadNombre || ""}_${hoy()}.png`.replace(/\s+/g, "_");
-    link.href = canvas.toDataURL("image/png");
-    link.click();
+    for (let i = 0; i < n; i++) {
+      const trozo = slots.slice(i * porParte, (i + 1) * porParte);
+      const parte = n > 1 ? { i: i + 1, n, total: slots.length } : null;
+      const html = buildListaHTML(trozo, barcos, cierres, excluidoSet, faltanInfo, calidadNombre, true, parte);
+      const cont = document.createElement("div");
+      cont.style.cssText = "position:fixed;left:-9999px;top:0;";
+      cont.innerHTML = html.replace(/<!DOCTYPE[\s\S]*?<body id="cap">/, '<div id="cap" style="width:680px;padding:24px;background:#fff;font-family:Arial,sans-serif;font-size:13px;color:#000">').replace("</body></html>", "</div>");
+      document.body.appendChild(cont);
+      try {
+        const canvas = await window.html2canvas(cont.querySelector("#cap"), { scale: 2, backgroundColor: "#fff" });
+        const link = document.createElement("a");
+        const sufijo = parte ? `_parte${parte.i}de${n}` : "";
+        link.download = `lista_reparto_${calidadNombre || ""}_${hoy()}${sufijo}.png`.replace(/\s+/g, "_");
+        link.href = canvas.toDataURL("image/png");
+        link.click();
+      } finally {
+        document.body.removeChild(cont);
+      }
+      // Pausa entre descargas para que el navegador no bloquee las siguientes
+      if (i < n - 1) await new Promise((r) => setTimeout(r, 600));
+    }
   } catch (e) {
     alert("No se pudo generar la imagen. Usa el botón Imprimir y guarda como PDF.");
-  } finally {
-    document.body.removeChild(cont);
   }
 }
 

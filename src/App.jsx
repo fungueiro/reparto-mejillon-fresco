@@ -576,7 +576,7 @@ function buildFilasLista(slots, barcos, cierres, excluidoSet, faltanInfo) {
       <tr style="${bg}">
         <td style="text-align:center;font-weight:700;font-size:15px">${s.posicion}</td>
         <td><strong>${b?.nombre ?? "—"}</strong>${flags ? `<br><small style="color:#a05a00">${flags}</small>` : ""}</td>
-                <td style="text-align:center">${b?.numBateas ?? ""}</td>
+        <td style="text-align:center">${b?.numBateas ?? ""}</td>
         <td style="text-align:right;font-weight:700">${faltanTxt}</td>
       </tr>`;
   }).join("");
@@ -603,7 +603,7 @@ function buildListaHTML(slots, barcos, cierres, excluidoSet, faltanInfo, calidad
     <p>Asociación de Productores de Mejillón &nbsp;·&nbsp; ${hoy()} &nbsp;·&nbsp; ${slots.length} posiciones</p>
     <table>
       <thead><tr>
-        <th class="c">#</th><th>Barco</th><th>Matrícula</th><th class="c">Bateas</th><th class="r">Bolsas para su turno</th>
+        <th class="c">#</th><th>Barco</th><th class="c">Bateas</th><th class="r">Bolsas para su turno</th>
       </tr></thead>
       <tbody>${filas}</tbody>
     </table>
